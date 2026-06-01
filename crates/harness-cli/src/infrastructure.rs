@@ -518,8 +518,9 @@ impl HarnessRepository for SqliteHarnessRepository {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| HarnessInfraError::MissingStoryVerifyCommand(id.to_owned()))?;
 
-        let output = Command::new("sh")
-            .arg("-c")
+        let (shell, flag) = verifier_shell();
+        let output = Command::new(shell)
+            .arg(flag)
             .arg(&verify_command)
             .current_dir(&self.repo_root)
             .output()?;
@@ -1417,14 +1418,19 @@ mod tests {
         );
         repository.init().unwrap();
 
-        let pwd_output = temp_dir.path().join("story-verify-pwd.txt");
+        let pwd_output = repo_root.join("story-verify-pwd.txt");
+        let verify_command = if cfg!(windows) {
+            "cd > story-verify-pwd.txt".to_owned()
+        } else {
+            "pwd > story-verify-pwd.txt".to_owned()
+        };
         repository
             .add_story(StoryAddInput {
                 id: "US-PASS".to_owned(),
                 title: "Passing story".to_owned(),
                 risk_lane: RiskLane::Normal,
                 contract_doc: None,
-                verify_command: Some(format!("pwd > {}", pwd_output.display())),
+                verify_command: Some(verify_command),
                 notes: None,
             })
             .unwrap();
