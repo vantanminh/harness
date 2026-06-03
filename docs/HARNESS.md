@@ -91,6 +91,11 @@ should use that binary for Harness work. The database is local to each project
 instance and `.gitignore`d. The schema is version-controlled under
 `scripts/schema/`.
 
+On Windows, run the same repo-local commands through
+`.\scripts\bin\harness-cli.exe`. Unless a Windows-specific example is shown,
+every `scripts/bin/harness-cli ...` example in this doc maps directly to
+`.\scripts\bin\harness-cli.exe ...`.
+
 This separation keeps policy docs stable and human-readable while giving agents
 a structured, queryable record of operational state. It also prepares the
 harness for future observability and automated evolution without adding more

@@ -65,31 +65,31 @@ https://openai.com/index/harness-engineering/
 From a target project directory, run:
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/hoangnb24/repository-harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --yes
 ```
 
 On Windows PowerShell, run:
 
 ```powershell
-& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/hoangnb24/repository-harness/main/scripts/install-harness.ps1"))) -Yes
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.ps1"))) -Yes
 ```
 
 If the target already has `AGENTS.md`, `docs/`, or `scripts/`, choose one:
 
 ```bash
 # Update an existing Harness repo without moving existing files
-curl -fsSL "https://raw.githubusercontent.com/hoangnb24/repository-harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --merge --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --merge --yes
 
 # Back up and replace AGENTS.md, docs/, and scripts/
-curl -fsSL "https://raw.githubusercontent.com/hoangnb24/repository-harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --override --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --override --yes
 ```
 
 ```powershell
 # Update an existing Harness repo without moving existing files
-& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/hoangnb24/repository-harness/main/scripts/install-harness.ps1"))) -Merge -Yes
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.ps1"))) -Merge -Yes
 
 # Back up and replace AGENTS.md, docs/, and scripts/
-& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/hoangnb24/repository-harness/main/scripts/install-harness.ps1"))) -Override -Yes
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.ps1"))) -Override -Yes
 ```
 
 Use `--merge` when a project already has Harness and you want to append newly
@@ -101,7 +101,7 @@ For older Harness installs whose `AGENTS.md` still contains the full generated
 operating guide, refresh it into the small stable shim:
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/hoangnb24/repository-harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --merge --refresh-agent-shim --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --merge --refresh-agent-shim --yes
 ```
 
 The refresh backs up the existing file. If it detects the old
@@ -112,11 +112,11 @@ project's local instructions.
 Or install into a specific path:
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/hoangnb24/repository-harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --directory /path/to/project --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --directory /path/to/project --yes
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/hoangnb24/repository-harness/main/scripts/install-harness.ps1"))) -Directory C:\path\to\project -Yes
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.ps1"))) -Directory C:\path\to\project -Yes
 ```
 
 Use `--dry-run` on Bash or `-DryRun` on PowerShell to preview changes before
@@ -127,12 +127,23 @@ verifies its `.sha256` checksum, and installs it at
 `scripts/bin/harness-cli` on macOS/Linux or `scripts/bin/harness-cli.exe` on
 Windows. The Rust CLI is the main Harness tool and stable command path.
 
+When a doc example shows `scripts/bin/harness-cli ...`, Windows agents should
+run the same command through `.\scripts\bin\harness-cli.exe ...` unless a
+Windows variant is already shown.
+
 Harness CLI release assets are published from tags by the
 `Harness CLI Release` GitHub Actions workflow. The installer expects each
 release to include `harness-cli-<platform>` and
 `harness-cli-<platform>.sha256` assets for macOS arm64, macOS x64, Linux x64,
 Linux arm64, and Windows x64. The Windows asset is
 `harness-cli-windows-x64.exe` plus `harness-cli-windows-x64.exe.sha256`.
+
+When working from the Harness source repo on Windows, build a local release
+artifact with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-harness-cli-release.ps1
+```
 
 ## Try The Flow
 
