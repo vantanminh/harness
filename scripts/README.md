@@ -101,26 +101,32 @@ shim. Use `--override` only when replacing the protected Harness surface is
 intentional.
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | HARNESS_SOURCE_BASE_URL="https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main" HARNESS_CLI_BASE_URL="https://github.com/vantanminh/harness/releases/latest/download" bash -s -- --yes
 ```
 
 ```powershell
+$env:HARNESS_SOURCE_BASE_URL = "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main"
+$env:HARNESS_CLI_BASE_URL = "https://github.com/vantanminh/harness/releases/latest/download"
 & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.ps1"))) -Yes
 ```
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --merge --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | HARNESS_SOURCE_BASE_URL="https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main" HARNESS_CLI_BASE_URL="https://github.com/vantanminh/harness/releases/latest/download" bash -s -- --merge --yes
 ```
 
 ```powershell
+$env:HARNESS_SOURCE_BASE_URL = "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main"
+$env:HARNESS_CLI_BASE_URL = "https://github.com/vantanminh/harness/releases/latest/download"
 & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.ps1"))) -Merge -Yes
 ```
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --merge --refresh-agent-shim --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | HARNESS_SOURCE_BASE_URL="https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main" HARNESS_CLI_BASE_URL="https://github.com/vantanminh/harness/releases/latest/download" bash -s -- --merge --refresh-agent-shim --yes
 ```
 
 ```powershell
+$env:HARNESS_SOURCE_BASE_URL = "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main"
+$env:HARNESS_CLI_BASE_URL = "https://github.com/vantanminh/harness/releases/latest/download"
 & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.ps1"))) -Merge -RefreshAgentShim -Yes
 ```
 

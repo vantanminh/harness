@@ -65,12 +65,14 @@ https://openai.com/index/harness-engineering/
 From a target project directory, run:
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | HARNESS_SOURCE_BASE_URL="https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main" HARNESS_CLI_BASE_URL="https://github.com/vantanminh/harness/releases/latest/download" bash -s -- --yes
 ```
 
 On Windows PowerShell, run:
 
 ```powershell
+$env:HARNESS_SOURCE_BASE_URL = "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main"
+$env:HARNESS_CLI_BASE_URL = "https://github.com/vantanminh/harness/releases/latest/download"
 & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.ps1"))) -Yes
 ```
 
@@ -78,14 +80,16 @@ If the target already has `AGENTS.md`, `docs/`, or `scripts/`, choose one:
 
 ```bash
 # Update an existing Harness repo without moving existing files
-curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --merge --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | HARNESS_SOURCE_BASE_URL="https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main" HARNESS_CLI_BASE_URL="https://github.com/vantanminh/harness/releases/latest/download" bash -s -- --merge --yes
 
 # Back up and replace AGENTS.md, docs/, and scripts/
-curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --override --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | HARNESS_SOURCE_BASE_URL="https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main" HARNESS_CLI_BASE_URL="https://github.com/vantanminh/harness/releases/latest/download" bash -s -- --override --yes
 ```
 
 ```powershell
 # Update an existing Harness repo without moving existing files
+$env:HARNESS_SOURCE_BASE_URL = "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main"
+$env:HARNESS_CLI_BASE_URL = "https://github.com/vantanminh/harness/releases/latest/download"
 & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.ps1"))) -Merge -Yes
 
 # Back up and replace AGENTS.md, docs/, and scripts/
@@ -101,7 +105,7 @@ For older Harness installs whose `AGENTS.md` still contains the full generated
 operating guide, refresh it into the small stable shim:
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --merge --refresh-agent-shim --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | HARNESS_SOURCE_BASE_URL="https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main" HARNESS_CLI_BASE_URL="https://github.com/vantanminh/harness/releases/latest/download" bash -s -- --merge --refresh-agent-shim --yes
 ```
 
 The refresh backs up the existing file. If it detects the old
@@ -112,10 +116,12 @@ project's local instructions.
 Or install into a specific path:
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --directory /path/to/project --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | HARNESS_SOURCE_BASE_URL="https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main" HARNESS_CLI_BASE_URL="https://github.com/vantanminh/harness/releases/latest/download" bash -s -- --directory /path/to/project --yes
 ```
 
 ```powershell
+$env:HARNESS_SOURCE_BASE_URL = "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main"
+$env:HARNESS_CLI_BASE_URL = "https://github.com/vantanminh/harness/releases/latest/download"
 & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.ps1"))) -Directory C:\path\to\project -Yes
 ```
 

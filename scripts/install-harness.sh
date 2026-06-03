@@ -35,9 +35,9 @@ Examples:
   scripts/install-harness.sh
   scripts/install-harness.sh --directory /path/to/project --yes
   scripts/install-harness.sh ./my-project --force
-  curl -fsSL https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh | bash -s -- --yes
-  curl -fsSL https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh | bash -s -- --merge --yes
-  curl -fsSL https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh | bash -s -- --merge --refresh-agent-shim --yes
+  curl -fsSL https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh | HARNESS_SOURCE_BASE_URL="https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main" HARNESS_CLI_BASE_URL="https://github.com/vantanminh/harness/releases/latest/download" bash -s -- --yes
+  curl -fsSL https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh | HARNESS_SOURCE_BASE_URL="https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main" HARNESS_CLI_BASE_URL="https://github.com/vantanminh/harness/releases/latest/download" bash -s -- --merge --yes
+  curl -fsSL https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh | HARNESS_SOURCE_BASE_URL="https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main" HARNESS_CLI_BASE_URL="https://github.com/vantanminh/harness/releases/latest/download" bash -s -- --merge --refresh-agent-shim --yes
 EOF
 }
 
