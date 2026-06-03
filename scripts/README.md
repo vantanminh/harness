@@ -8,6 +8,10 @@ The Rust Harness CLI is the primary interface for the durable layer. Installed
 projects use the prebuilt binary at `scripts/bin/harness-cli` on macOS/Linux or
 `scripts/bin/harness-cli.exe` on Windows for normal Harness work.
 
+Windows agents should treat every `scripts/bin/harness-cli ...` example in this
+file as `.\scripts\bin\harness-cli.exe ...` unless a Windows-specific command
+is already shown.
+
 ```bash
 scripts/bin/harness-cli init          # Create the database
 scripts/bin/harness-cli intake ...    # Record a feature intake classification
@@ -97,27 +101,27 @@ shim. Use `--override` only when replacing the protected Harness surface is
 intentional.
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/hoangnb24/repository-harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --yes
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/hoangnb24/repository-harness/main/scripts/install-harness.ps1"))) -Yes
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.ps1"))) -Yes
 ```
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/hoangnb24/repository-harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --merge --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --merge --yes
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/hoangnb24/repository-harness/main/scripts/install-harness.ps1"))) -Merge -Yes
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.ps1"))) -Merge -Yes
 ```
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/hoangnb24/repository-harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --merge --refresh-agent-shim --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --merge --refresh-agent-shim --yes
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/hoangnb24/repository-harness/main/scripts/install-harness.ps1"))) -Merge -RefreshAgentShim -Yes
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.ps1"))) -Merge -RefreshAgentShim -Yes
 ```
 
 `--refresh-agent-shim` backs up `AGENTS.md` before changing it. If the existing
@@ -176,6 +180,10 @@ Build the current-platform Rust CLI release artifact from the source repo:
 scripts/build-harness-cli-release.sh
 ```
 
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-harness-cli-release.ps1
+```
+
 The script writes `dist/harness-cli-<platform>` plus `.sha256` checksums. The
 Windows artifact includes the `.exe` suffix. Supported labels are:
 
@@ -189,6 +197,10 @@ For cross-compilation, pass a Cargo target triple:
 
 ```bash
 scripts/build-harness-cli-release.sh --target x86_64-unknown-linux-gnu
+```
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-harness-cli-release.ps1 -Target x86_64-pc-windows-msvc
 ```
 
 GitHub releases are produced by

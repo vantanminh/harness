@@ -147,6 +147,11 @@ This repo uses Harness. Before work, read:
 
 Use the Rust Harness CLI at `scripts/bin/harness-cli` on macOS/Linux or
 `scripts/bin/harness-cli.exe` on Windows as the main operational tool.
+
+When a Harness doc shows a POSIX example like `scripts/bin/harness-cli ...`,
+Windows agents should run the same command through
+`.\scripts\bin\harness-cli.exe ...` unless the doc already shows a Windows
+variant.
 <!-- HARNESS:END -->
 '@
 }
@@ -208,9 +213,9 @@ function Get-DefaultCliBaseUrl {
         $tag = Read-CliReleaseTag
     }
     if (![string]::IsNullOrWhiteSpace($tag) -and $tag -ne "latest") {
-        return "https://github.com/hoangnb24/repository-harness/releases/download/$tag"
+        return "https://github.com/vantanminh/harness/releases/download/$tag"
     }
-    return "https://github.com/hoangnb24/repository-harness/releases/latest/download"
+    return "https://github.com/vantanminh/harness/releases/latest/download"
 }
 
 function Install-HarnessCliBinary {
@@ -278,7 +283,7 @@ $script:Created = 0
 $script:Updated = 0
 $script:Skipped = 0
 $script:Source = Get-SourceMode
-$script:SourceBaseUrl = if ($env:HARNESS_SOURCE_BASE_URL) { $env:HARNESS_SOURCE_BASE_URL.TrimEnd("/") } else { "https://raw.githubusercontent.com/hoangnb24/repository-harness/main" }
+$script:SourceBaseUrl = if ($env:HARNESS_SOURCE_BASE_URL) { $env:HARNESS_SOURCE_BASE_URL.TrimEnd("/") } else { "https://raw.githubusercontent.com/vantanminh/harness/main" }
 $script:CliBaseUrl = if ($env:HARNESS_CLI_BASE_URL) { $env:HARNESS_CLI_BASE_URL.TrimEnd("/") } else { Get-DefaultCliBaseUrl }
 $script:TargetDir = Resolve-TargetPath $Directory
 $script:BackupDir = Join-Path $script:TargetDir (".harness-backup/" + (Get-Date -Format "yyyyMMddHHmmss"))
