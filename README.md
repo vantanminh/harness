@@ -92,6 +92,12 @@ curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/in
 & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.ps1"))) -Override -Yes
 ```
 
+On WSL, use:
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | HARNESS_SOURCE_BASE_URL="https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main" HARNESS_CLI_BASE_URL="https://github.com/vantanminh/harness/releases/latest/download" bash -s -- --merge --refresh-agent-shim --yes
+```
+
 Use `--merge` when a project already has Harness and you want to append newly
 added Harness files without moving the existing `AGENTS.md`, `docs/`, or
 `scripts/` paths into backup. Existing files stay untouched; only missing
