@@ -100,6 +100,11 @@ full generated Harness guide in `AGENTS.md` and should move to the small stable
 shim. Use `--override` only when replacing the protected Harness surface is
 intentional.
 
+`--merge` also keeps an existing `scripts/bin/harness-cli` or
+`scripts/bin/harness-cli.exe` in place. If you need the installer to refresh an
+older CLI binary, remove it first or re-run with `--force` on Bash or `-Force`
+on PowerShell.
+
 ```bash
 curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | HARNESS_SOURCE_BASE_URL="https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main" HARNESS_CLI_BASE_URL="https://github.com/vantanminh/harness/releases/latest/download" bash -s -- --yes
 ```
@@ -129,6 +134,9 @@ $env:HARNESS_SOURCE_BASE_URL = "https://raw.githubusercontent.com/vantanminh/har
 $env:HARNESS_CLI_BASE_URL = "https://github.com/vantanminh/harness/releases/latest/download"
 & ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.ps1"))) -Merge -RefreshAgentShim -Yes
 ```
+
+For an existing repo on Windows, this `-Merge -RefreshAgentShim -Yes` path is
+the recommended update command.
 
 `--refresh-agent-shim` backs up `AGENTS.md` before changing it. If the existing
 file is recognized as the old Harness-generated operating guide, the installer
