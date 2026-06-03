@@ -101,27 +101,27 @@ shim. Use `--override` only when replacing the protected Harness surface is
 intentional.
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --yes
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.ps1"))) -Yes
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.ps1"))) -Yes
 ```
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --merge --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --merge --yes
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.ps1"))) -Merge -Yes
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.ps1"))) -Merge -Yes
 ```
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --merge --refresh-agent-shim --yes
+curl -fsSL "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh?$(date +%s)" | bash -s -- --merge --refresh-agent-shim --yes
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.ps1"))) -Merge -RefreshAgentShim -Yes
+& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.ps1"))) -Merge -RefreshAgentShim -Yes
 ```
 
 `--refresh-agent-shim` backs up `AGENTS.md` before changing it. If the existing

@@ -35,9 +35,9 @@ Examples:
   scripts/install-harness.sh
   scripts/install-harness.sh --directory /path/to/project --yes
   scripts/install-harness.sh ./my-project --force
-  curl -fsSL https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.sh | bash -s -- --yes
-  curl -fsSL https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.sh | bash -s -- --merge --yes
-  curl -fsSL https://raw.githubusercontent.com/vantanminh/harness/main/scripts/install-harness.sh | bash -s -- --merge --refresh-agent-shim --yes
+  curl -fsSL https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh | bash -s -- --yes
+  curl -fsSL https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh | bash -s -- --merge --yes
+  curl -fsSL https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main/scripts/install-harness.sh | bash -s -- --merge --refresh-agent-shim --yes
 EOF
 }
 
@@ -627,7 +627,7 @@ SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" 2>/dev/null && pwd -P || printf '')"
 SOURCE_ROOT=""
 SOURCE_MODE="remote"
-SOURCE_BASE_URL="${HARNESS_SOURCE_BASE_URL:-https://raw.githubusercontent.com/vantanminh/harness/main}"
+SOURCE_BASE_URL="${HARNESS_SOURCE_BASE_URL:-https://raw.githubusercontent.com/vantanminh/harness/refs/heads/main}"
 SOURCE_BASE_URL="${SOURCE_BASE_URL%/}"
 CLI_BASE_URL="${HARNESS_CLI_BASE_URL:-}"
 CLI_BASE_URL="${CLI_BASE_URL%/}"
