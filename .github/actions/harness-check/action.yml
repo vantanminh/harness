@@ -1,5 +1,5 @@
 name: harness-check
-description: Run harness doctor and story verify-all in a target repository
+description: Run harness doctor and explicitly approved story verification in a target repository
 inputs:
   working-directory:
     description: Project directory
@@ -15,4 +15,4 @@ runs:
     - name: Verify stories
       working-directory: ${{ inputs.working-directory }}
       shell: bash
-      run: harness story verify-all
+      run: harness story verify-all --allow-project-command
