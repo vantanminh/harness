@@ -6,10 +6,16 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use argon2::{
+    password_hash::{PasswordHash, SaltString},
+    Argon2, PasswordHasher, PasswordVerifier,
+};
 use sha2::{Digest, Sha256};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
-use crate::domain::paths::{is_loopback_bind_host, resolve_harness_home};
+use crate::domain::paths::{
+    is_loopback_bind_host, is_valid_public_https_url, resolve_harness_home,
+};
 use crate::error::{Error, Result};
 use crate::VERSION;
 
@@ -45,10 +51,20 @@ pub fn set_dashboard_password(password: &str) -> Result<std::path::PathBuf> {
     let home = resolve_harness_home();
     std::fs::create_dir_all(&home)?;
     let path = dashboard_password_path();
-    let mut hasher = Sha256::new();
-    hasher.update(password.as_bytes());
-    let digest = hex::encode(hasher.finalize());
+    let mut salt_bytes = [0u8; 16];
+    getrandom::getrandom(&mut salt_bytes)
+        .map_err(|err| Error::new(format!("generate dashboard password salt: {err}")))?;
+    let salt = SaltString::encode_b64(&salt_bytes)
+        .map_err(|err| Error::new(format!("encode dashboard password salt: {err}")))?;
+    let digest = Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|err| Error::new(format!("hash dashboard password: {err}")))?
+        .to_string();
     crate::infra::entities::atomic_write(&path, &format!("{digest}\n"))?;
+    // A pre-0.27 SHA-256 record cannot be upgraded without the plaintext.  It
+    // is safe to remove it after writing the Argon2id record; authentication
+    // will use the memory-hard hash from now on.
+    let _ = std::fs::remove_file(legacy_dashboard_password_path());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -58,6 +74,10 @@ pub fn set_dashboard_password(password: &str) -> Result<std::path::PathBuf> {
 }
 
 fn dashboard_password_path() -> std::path::PathBuf {
+    resolve_harness_home().join("dashboard-password.argon2")
+}
+
+fn legacy_dashboard_password_path() -> std::path::PathBuf {
     resolve_harness_home().join("dashboard-password.sha256")
 }
 
@@ -66,6 +86,16 @@ fn dashboard_password_hash() -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::fs::read_to_string(legacy_dashboard_password_path())
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+}
+
+pub fn dashboard_password_configured() -> bool {
+    dashboard_password_hash().is_some_and(|hash| hash.starts_with("$argon2id$"))
 }
 
 fn dashboard_authorized(headers: &[Header]) -> bool {
@@ -85,9 +115,33 @@ fn dashboard_authorized(headers: &[Header]) -> bool {
     let Some(supplied) = supplied else {
         return false;
     };
+    if expected.starts_with("$argon2") {
+        let Ok(parsed) = PasswordHash::new(&expected) else {
+            return false;
+        };
+        return Argon2::default()
+            .verify_password(supplied.as_bytes(), &parsed)
+            .is_ok();
+    }
+
+    // Legacy SHA-256 records are accepted only long enough for an operator to
+    // replace them with `set-password`; compare the complete digest without an
+    // early-return equality check.
     let mut hasher = Sha256::new();
     hasher.update(supplied.as_bytes());
-    hex::encode(hasher.finalize()) == expected
+    let actual = hex::encode(hasher.finalize());
+    constant_time_equal(actual.as_bytes(), expected.as_bytes())
+}
+
+fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
+    let mut diff = left.len() ^ right.len();
+    let max = left.len().max(right.len());
+    for index in 0..max {
+        let a = left.get(index).copied().unwrap_or(0);
+        let b = right.get(index).copied().unwrap_or(0);
+        diff |= usize::from(a ^ b);
+    }
+    diff == 0
 }
 
 pub fn start_dashboard(
@@ -100,9 +154,14 @@ pub fn start_dashboard(
         let url = public_url.ok_or_else(|| {
             Error::new("refusing non-loopback dashboard bind without --public-url https://...")
         })?;
-        if !url.starts_with("https://") {
+        if !is_valid_public_https_url(url) {
             return Err(Error::new(
-                "--public-url must use https:// for non-loopback dashboard",
+                "--public-url must be a valid https URL without credentials, query, or fragment for non-loopback dashboard",
+            ));
+        }
+        if !dashboard_password_configured() {
+            return Err(Error::new(
+                "refusing non-loopback dashboard bind without a configured password; run `harness dashboard set-password` first",
             ));
         }
     }
@@ -170,6 +229,18 @@ fn dashboard_loop(server: Server, shutdown: Arc<AtomicBool>) {
                 response.add_header(
                     Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
                 );
+                for (name, value) in [
+                    (
+                        "Content-Security-Policy",
+                        "default-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+                    ),
+                    ("X-Content-Type-Options", "nosniff"),
+                    ("Referrer-Policy", "no-referrer"),
+                    ("X-Frame-Options", "DENY"),
+                ] {
+                    response
+                        .add_header(Header::from_bytes(name.as_bytes(), value.as_bytes()).unwrap());
+                }
                 if status == 401 {
                     response.add_header(
                         Header::from_bytes(&b"WWW-Authenticate"[..], &b"Bearer"[..]).unwrap(),

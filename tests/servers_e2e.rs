@@ -10,11 +10,20 @@ fn bin() -> PathBuf {
 }
 
 fn http_get(addr: &str, path: &str) -> (u16, String) {
+    http_get_with_headers(addr, path, &[])
+}
+
+fn http_get_with_headers(addr: &str, path: &str, headers: &[(&str, &str)]) -> (u16, String) {
     let mut stream = TcpStream::connect(addr).expect("connect");
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    let extra = headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect::<String>();
     stream
         .write_all(
-            format!("GET {path} HTTP/1.0\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes(),
+            format!("GET {path} HTTP/1.0\r\nHost: {addr}\r\n{extra}Connection: close\r\n\r\n")
+                .as_bytes(),
         )
         .unwrap();
     let mut buf = Vec::new();
@@ -28,6 +37,79 @@ fn http_get(addr: &str, path: &str) -> (u16, String) {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     (status, body.to_string())
+}
+
+#[test]
+fn dashboard_password_is_argon2id_and_public_bind_fails_closed() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let home = std::env::temp_dir().join(format!("harness-home-dashboard-auth-{nonce}"));
+    std::fs::create_dir_all(&home).unwrap();
+
+    let refused = Command::new(bin())
+        .args([
+            "dashboard",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "3954",
+            "--public-url",
+            "https://dashboard.example.test",
+        ])
+        .env("HARNESS_HOME", &home)
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("configured password"));
+
+    let set = Command::new(bin())
+        .args([
+            "dashboard",
+            "set-password",
+            "--password",
+            "correct horse battery staple",
+        ])
+        .env("HARNESS_HOME", &home)
+        .output()
+        .unwrap();
+    assert!(
+        set.status.success(),
+        "{}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+    let record = std::fs::read_to_string(home.join("dashboard-password.argon2")).unwrap();
+    assert!(record.starts_with("$argon2id$"), "{record}");
+    assert!(!home.join("dashboard-password.sha256").exists());
+
+    let mut dashboard = Command::new(bin())
+        .args([
+            "dashboard",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "3954",
+            "--public-url",
+            "https://dashboard.example.test",
+        ])
+        .env("HARNESS_HOME", &home)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_port("127.0.0.1:3954");
+    let (status, _) = http_get("127.0.0.1:3954", "/");
+    assert_eq!(status, 401);
+    let (status, body) = http_get_with_headers(
+        "127.0.0.1:3954",
+        "/",
+        &[("X-Harness-Password", "correct horse battery staple")],
+    );
+    assert_eq!(status, 200);
+    assert!(body.contains("Harness Dashboard"));
+    let _ = dashboard.kill();
+    let _ = dashboard.wait();
 }
 
 fn http_post(addr: &str, path: &str, json: &str) -> (u16, String) {
