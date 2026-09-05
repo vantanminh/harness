@@ -256,13 +256,7 @@ pub fn write_entity_file(
             absolute_path.display()
         )));
     }
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmp = absolute_path.with_extension(format!("md.{nanos}.tmp"));
-    fs::write(&tmp, content)?;
-    fs::rename(&tmp, &absolute_path)?;
+    atomic_write(&absolute_path, &content)?;
     Ok(EntityFile {
         absolute_path,
         relative_path,
@@ -340,14 +334,24 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let tmp = path.with_extension(format!("tmp.{nanos}"));
-    fs::write(&tmp, content)?;
-    fs::rename(&tmp, path)?;
-    #[cfg(unix)]
-    if path
+    let sensitive = path
         .components()
         .any(|component| component.as_os_str() == ".5harness")
-        || path.file_name().is_some_and(|name| name == "registry.json")
-    {
+        || path.file_name().is_some_and(|name| name == "registry.json");
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    #[cfg(unix)]
+    if sensitive {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = sensitive;
+    file.write_all(content.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(&tmp, path)?;
+    #[cfg(unix)]
+    if sensitive {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     }
