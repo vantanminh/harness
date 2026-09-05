@@ -43,6 +43,13 @@ const selected = files.length > 0
 
 if (selected.length === 0) fail("no release binaries supplied or staged in bin/");
 
+for (const file of selected) {
+  const relative = path.relative(root, file);
+  if (relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    fail(`refusing to read a binary outside the repository: ${relative}`);
+  }
+}
+
 const rows = selected.map((file) => {
   if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
     fail(`binary does not exist: ${path.relative(root, file)}`);
@@ -60,6 +67,10 @@ const duplicates = rows.map((row) => row.name).filter((name, index, all) => all.
 if (duplicates.length > 0) fail(`duplicate binary names: ${duplicates.join(", ")}`);
 
 const destination = path.resolve(root, output);
+const relativeDestination = path.relative(root, destination);
+if (relativeDestination.startsWith(`..${path.sep}`) || path.isAbsolute(relativeDestination)) {
+  fail(`refusing to write a manifest outside the repository: ${relativeDestination}`);
+}
 fs.writeFileSync(destination, `${rows.map(({ digest, name }) => `${digest}  ${name}`).join("\n")}\n`, {
   mode: 0o600,
 });

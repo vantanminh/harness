@@ -80,7 +80,7 @@ expected_checksum() {
   fi
   if [[ -n "$manifest" && -f "$manifest" ]]; then
     awk -v name="$checksum_name" '
-      $1 ~ /^[[:xdigit:]]{64}$/ {
+      length($1) == 64 && $1 ~ /^[[:xdigit:]]+$/ {
         candidate=$2; sub(/^\*/, "", candidate); sub(/^.*\//, "", candidate)
         if (candidate == name) { print tolower($1); exit }
       }
