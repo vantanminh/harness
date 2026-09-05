@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
-use crate::domain::paths::is_loopback_bind_host;
+use crate::domain::paths::{is_loopback_bind_host, is_valid_public_https_url};
 use crate::domain::project_id::extract_project_id;
 use crate::error::{Error, Result};
 use crate::VERSION;
@@ -24,6 +24,13 @@ use super::project_link;
 use super::query::{query_matrix, query_stats, query_view_json};
 use super::status::{doctor_json, next_items, status_json};
 use crate::infra::entities::MutationLock;
+
+const MAX_MCP_BODY_BYTES: usize = 1_048_576;
+const MAX_MCP_HEADER_VALUE_BYTES: usize = 16 * 1024;
+const MAX_MCP_STRING_BYTES: usize = 64 * 1024;
+const MAX_MCP_DEPTH: usize = 32;
+const MAX_MCP_COLLECTION_ITEMS: usize = 1_000;
+const DEFAULT_MCP_TOKEN_TTL_SECS: u64 = 86_400;
 
 pub fn mcp_tools() -> Value {
     json!([
@@ -71,6 +78,39 @@ fn mcp_tools_for_root(root: Option<&PathBuf>) -> Value {
 
 pub fn handle_mcp_request(root: Option<&PathBuf>, body: &str) -> Value {
     handle_mcp_request_with_auth(root, body, false)
+}
+
+fn json_within_limits(value: &Value, depth: usize) -> bool {
+    if depth > MAX_MCP_DEPTH {
+        return false;
+    }
+    match value {
+        Value::String(text) => text.len() <= MAX_MCP_STRING_BYTES,
+        Value::Array(items) => {
+            items.len() <= MAX_MCP_COLLECTION_ITEMS
+                && items.iter().all(|item| json_within_limits(item, depth + 1))
+        }
+        Value::Object(items) => {
+            items.len() <= MAX_MCP_COLLECTION_ITEMS
+                && items.iter().all(|(key, item)| {
+                    key.len() <= MAX_MCP_STRING_BYTES && json_within_limits(item, depth + 1)
+                })
+        }
+        _ => true,
+    }
+}
+
+fn constant_time_equal(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let mut diff = left.len() ^ right.len();
+    let max = left.len().max(right.len());
+    for index in 0..max {
+        let a = left.get(index).copied().unwrap_or(0);
+        let b = right.get(index).copied().unwrap_or(0);
+        diff |= usize::from(a ^ b);
+    }
+    diff == 0
 }
 
 fn handle_mcp_request_with_auth(root: Option<&PathBuf>, body: &str, authenticated: bool) -> Value {
@@ -470,9 +510,9 @@ pub fn start_mcp(
         let url = public_url.ok_or_else(|| {
             Error::new("refusing non-loopback MCP bind without --public-url https://...")
         })?;
-        if !url.starts_with("https://") {
+        if !is_valid_public_https_url(url) {
             return Err(Error::new(
-                "--public-url must use https:// for non-loopback MCP",
+                "--public-url must be a valid https URL without credentials, query, or fragment for non-loopback MCP",
             ));
         }
     }
@@ -489,6 +529,12 @@ pub fn start_mcp(
             hex::encode(bytes)
         }
     };
+    let ttl_secs = std::env::var("HARNESS_MCP_TOKEN_TTL_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MCP_TOKEN_TTL_SECS);
+    let token_expires_at = std::time::Instant::now() + Duration::from_secs(ttl_secs);
     let project_id = std::fs::read_to_string(project_root.join("AGENTS.md"))
         .ok()
         .and_then(|text| extract_project_id(&text));
@@ -507,8 +553,17 @@ pub fn start_mcp(
     let issuer = public_url
         .map(|url| url.trim_end_matches('/').to_string())
         .unwrap_or_else(|| format!("http://{host}:{actual}"));
-    let handle =
-        thread::spawn(move || mcp_loop(server, flag, project_root, project_id, issuer, token));
+    let handle = thread::spawn(move || {
+        mcp_loop(
+            server,
+            flag,
+            project_root,
+            project_id,
+            issuer,
+            token,
+            token_expires_at,
+        )
+    });
     if serve_forever {
         loop {
             thread::sleep(Duration::from_secs(60));
@@ -530,6 +585,7 @@ fn mcp_loop(
     project_id: Option<String>,
     issuer: String,
     token: String,
+    token_expires_at: std::time::Instant,
 ) {
     loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -539,8 +595,29 @@ fn mcp_loop(
             Ok(Some(mut request)) => {
                 let url = request.url().to_string();
                 let method = request.method().clone();
+                let oversized_headers = request
+                    .headers()
+                    .iter()
+                    .any(|header| header.value.as_str().len() > MAX_MCP_HEADER_VALUE_BYTES);
+                let oversized = request
+                    .headers()
+                    .iter()
+                    .find(|header| header.field.equiv("Content-Length"))
+                    .and_then(|header| header.value.as_str().parse::<usize>().ok())
+                    .is_some_and(|length| length > MAX_MCP_BODY_BYTES);
                 let mut body = String::new();
-                let _ = request.as_reader().read_to_string(&mut body);
+                if !oversized {
+                    let mut limited = request.as_reader().take((MAX_MCP_BODY_BYTES + 1) as u64);
+                    let _ = limited.read_to_string(&mut body);
+                }
+                let oversized = oversized || body.len() > MAX_MCP_BODY_BYTES;
+                let json_limits_exceeded = if oversized {
+                    false
+                } else {
+                    serde_json::from_str::<Value>(&body)
+                        .ok()
+                        .is_some_and(|value| !json_within_limits(&value, 0))
+                };
                 let path = url.split('?').next().unwrap_or("/");
                 let authorization = request
                     .headers()
@@ -549,7 +626,10 @@ fn mcp_loop(
                     .map(|h| h.value.as_str());
                 let authenticated = authorization
                     .and_then(|value| value.strip_prefix("Bearer "))
-                    .is_some_and(|value| value == token);
+                    .is_some_and(|value| {
+                        std::time::Instant::now() < token_expires_at
+                            && constant_time_equal(value, &token)
+                    });
                 let needs_auth = serde_json::from_str::<Value>(&body)
                     .ok()
                     .and_then(|v| {
@@ -558,18 +638,20 @@ fn mcp_loop(
                             .map(|m| m == "tools/call")
                     })
                     .unwrap_or(true);
-                let supplied_project = request
+                let header_project = request
                     .headers()
                     .iter()
                     .find(|h| h.field.equiv("X-Harness-Project"))
-                    .map(|h| h.value.as_str())
-                    .or_else(|| {
-                        url.split_once('?').and_then(|(_, query)| {
-                            query
-                                .split('&')
-                                .find_map(|item| item.strip_prefix("project="))
-                        })
-                    });
+                    .map(|h| h.value.as_str());
+                let query_project = url.split_once('?').and_then(|(_, query)| {
+                    query
+                        .split('&')
+                        .find_map(|item| item.strip_prefix("project="))
+                });
+                let selector_conflict = header_project.is_some()
+                    && query_project.is_some()
+                    && header_project != query_project;
+                let supplied_project = header_project.or(query_project);
                 let project_bound = project_id
                     .as_deref()
                     .is_some_and(|id| supplied_project == Some(id));
@@ -591,6 +673,29 @@ fn mcp_loop(
                             "transport": "streamable-http",
                             "tools": mcp_tools_for_root(Some(&project_root))
                         }))
+                            .unwrap_or_else(|_| "{}".into()),
+                        false,
+                    ),
+                    (Method::Post, "/mcp") | (Method::Post, "/") if oversized_headers => (
+                        431,
+                        "application/json; charset=utf-8",
+                        serde_json::to_string(&json!({"error":"request header exceeds 16 KiB limit"}))
+                            .unwrap_or_else(|_| "{}".into()),
+                        false,
+                    ),
+                    (Method::Post, "/mcp") | (Method::Post, "/")
+                        if oversized || json_limits_exceeded =>
+                    (
+                        413,
+                        "application/json; charset=utf-8",
+                        serde_json::to_string(&json!({"error":"request body exceeds 1 MiB limit"}))
+                            .unwrap_or_else(|_| "{}".into()),
+                        false,
+                    ),
+                    (Method::Post, "/mcp") | (Method::Post, "/") if selector_conflict => (
+                        400,
+                        "application/json; charset=utf-8",
+                        serde_json::to_string(&json!({"error":"conflicting project selectors"}))
                             .unwrap_or_else(|_| "{}".into()),
                         false,
                     ),
@@ -630,9 +735,14 @@ fn mcp_loop(
                         Header::from_bytes(&b"Content-Type"[..], ctype.as_bytes()).unwrap(),
                         Header::from_bytes(
                             &b"Access-Control-Allow-Headers"[..],
-                            &b"Authorization, Content-Type"[..],
+                            &b"Authorization, Content-Type, X-Harness-Project"[..],
                         )
                         .unwrap(),
+                        Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
+                        Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..])
+                            .unwrap(),
+                        Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap(),
+                        Header::from_bytes(&b"X-Frame-Options"[..], &b"DENY"[..]).unwrap(),
                     ],
                     Cursor::new(payload.into_bytes()),
                     None,

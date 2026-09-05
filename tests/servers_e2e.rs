@@ -211,6 +211,55 @@ fn mcp_mutations_require_token_and_project_binding() {
     );
     assert_eq!(status, 200);
     assert!(response.contains("Intake IN-001"), "{response}");
+    let conflict_path = format!("/mcp?project={project_id}");
+    let (status, _) = http_post_with_headers(
+        "127.0.0.1:3943",
+        &conflict_path,
+        body,
+        &[
+            ("Authorization", "Bearer test-token"),
+            ("X-Harness-Project", "different-project"),
+        ],
+    );
+    assert_eq!(status, 400);
+    let _ = mcp.kill();
+    let _ = mcp.wait();
+}
+
+#[test]
+fn mcp_rejects_oversized_request_bodies_before_authentication() {
+    let tmp = std::env::temp_dir().join(format!(
+        "harness-mcp-size-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let mut mcp = Command::new(bin())
+        .args([
+            "mcp",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "3955",
+            "--dir",
+            tmp.to_str().unwrap(),
+            "--token",
+            "size-token",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_port("127.0.0.1:3955");
+    let oversized = format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"padding\":\"{}\"}}",
+        "x".repeat(1_100_000)
+    );
+    let (status, body) = http_post("127.0.0.1:3955", "/mcp", &oversized);
+    assert_eq!(status, 413);
+    assert!(body.contains("1 MiB"), "{body}");
     let _ = mcp.kill();
     let _ = mcp.wait();
 }
