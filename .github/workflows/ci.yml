@@ -18,8 +18,8 @@
 #   - Workflow filename: ci.yml  (primary auto-release path)
 #   - Requires npm CLI ≥ 11.5.1 and id-token: write
 # Provenance is CI-only (`npm publish --provenance`). Do not set
-# publishConfig.provenance (local publish fails with provider: null).
-# NPM_TOKEN is optional fallback only (emergency; no OIDC provenance).
+# publishConfig.provenance (local publish fails with provider: null). Release
+# jobs intentionally do not read a long-lived NPM_TOKEN fallback.
 #
 # Flake policy: fail-fast is false so all cells report; do not add blind
 # retries — fix or quarantine flakes with a tracked story (decision 0018).
@@ -105,8 +105,152 @@ jobs:
       - name: Enforce dependency policy
         run: cargo deny check
 
+  # Prepare the immutable release ref before any release artifact is built.
+  # This ordering is intentional: native binaries, npm, and GitHub Release
+  # assets must all come from the exact same versioned commit.
+  release-prep:
+    name: Prepare auto-release ref
+    needs: [build-test, rust-security]
+    if: >
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      !contains(github.event.head_commit.message, 'chore(release):') &&
+      !contains(github.event.head_commit.message, '[skip release]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    outputs:
+      skip: ${{ steps.plan.outputs.skip }}
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      ref: ${{ steps.version.outputs.ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-07-16
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e289664e5dc5ba9c38 # v6.0.0
+        with:
+          node-version: "24.x"
+          cache: npm
+
+      - name: Ensure pinned npm CLI
+        run: npm install --global npm@11.17.0
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Sync to latest main before planning release
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git pull --rebase origin main
+
+      - name: Detect bump kind from commits since last tag
+        id: bump
+        run: |
+          set -euo pipefail
+          LAST_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          if [ -n "$LAST_TAG" ]; then
+            RANGE="${LAST_TAG}..HEAD"
+            SUBJECTS="$(git log --pretty=%s "$RANGE" || true)"
+            BODIES="$(git log --pretty=%b "$RANGE" || true)"
+          else
+            SUBJECTS=""
+            BODIES=""
+          fi
+          KIND="patch"
+          if echo "$SUBJECTS" | grep -Eiq '^[a-z]+(\([^)]+\))?!:' \
+            || echo "$BODIES" | grep -Eiq '^BREAKING CHANGE:'; then
+            KIND="major"
+          elif echo "$SUBJECTS" | grep -Eiq '^feat(\([^)]+\))?:'; then
+            KIND="minor"
+          fi
+          HEAD_MSG="${{ github.event.head_commit.message }}"
+          if echo "$HEAD_MSG" | grep -Eiq '\[release:[[:space:]]*major\]'; then
+            KIND="major"
+          elif echo "$HEAD_MSG" | grep -Eiq '\[release:[[:space:]]*minor\]'; then
+            KIND="minor"
+          elif echo "$HEAD_MSG" | grep -Eiq '\[release:[[:space:]]*patch\]'; then
+            KIND="patch"
+          fi
+          echo "kind=$KIND" >> "$GITHUB_OUTPUT"
+
+      - name: Plan release
+        id: plan
+        run: |
+          set -euo pipefail
+          OUT="$(node scripts/release-plan.mjs --kind "${{ steps.bump.outputs.kind }}")"
+          echo "$OUT"
+          while IFS= read -r line; do
+            case "$line" in
+              skip=*|mode=*|version=*|kind=*|reason=*) echo "$line" >> "$GITHUB_OUTPUT" ;;
+            esac
+          done <<< "$OUT"
+
+      - name: Bump version
+        id: version
+        if: steps.plan.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          MODE="${{ steps.plan.outputs.mode }}"
+          if [ "$MODE" = "bump" ]; then
+            NEW="$(node scripts/bump-version.mjs "${{ steps.bump.outputs.kind }}" | tail -n1)"
+          else
+            NEW="$(node -p "require('./package.json').version")"
+          fi
+          TAG="v${NEW}"
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "ref=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Release check (post-bump)
+        if: steps.plan.outputs.skip != 'true'
+        run: npm run release:check
+
+      - name: Set up optional GPG signing
+        id: gpg
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${GPG_PRIVATE_KEY:-}" ]; then
+            echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+            KEY_ID="$(gpg --list-secret-keys --keyid-format LONG | grep '^sec' | head -1 | sed 's/.*\/\([^ ]*\).*/\1/')"
+            git config user.signingkey "$KEY_ID"
+            git config commit.gpgsign true
+            git config tag.gpgSign true
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit, tag, and push release ref
+        if: steps.plan.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          SIGN_FLAG=""
+          if [ "${{ steps.gpg.outputs.signed }}" = "true" ]; then SIGN_FLAG="--sign"; fi
+          node scripts/git-push-release.mjs $SIGN_FLAG \
+            --tag "${{ steps.version.outputs.tag }}" \
+            --message "chore(release): ${{ steps.version.outputs.version }}"
+
   native-binaries:
     name: native ${{ matrix.target }}
+    needs: [build-test, rust-security, release-prep]
+    if: >
+      always() &&
+      needs.build-test.result == 'success' &&
+      needs.rust-security.result == 'success' &&
+      (needs.release-prep.result == 'success' || needs.release-prep.result == 'skipped')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -140,6 +284,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
+        with:
+          # Release pushes build from the freshly tagged version; ordinary
+          # pushes/PRs build the triggering commit.
+          ref: ${{ needs.release-prep.outputs.ref || github.sha }}
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-07-16
         with:
@@ -226,17 +374,20 @@ jobs:
           bash install/macos.sh
           "$HOME/.5harness-ci/bin/harness" --version
 
-  # Auto-bump version, tag, and publish on push to main.
-  # Serialized so two concurrent pushes cannot both invent release commits
-  # (root cause of local non-fast-forward / package.json merge fights).
+  # Publish artifacts built from the exact ref prepared above. There is no
+  # rebuild or manual upload path: the staged npm binaries and GitHub Release
+  # assets come from the same six immutable artifact uploads.
   auto-release:
     name: Auto-release
-    needs: [build-test, rust-security, native-binaries, linux-auto-install, windows-auto-install, macos-auto-install]
+    needs: [release-prep, native-binaries, linux-auto-install, windows-auto-install, macos-auto-install]
     if: >
-      github.ref == 'refs/heads/main' &&
-      github.event_name == 'push' &&
-      !contains(github.event.head_commit.message, 'chore(release):') &&
-      !contains(github.event.head_commit.message, '[skip release]')
+      always() &&
+      needs.release-prep.result == 'success' &&
+      needs.release-prep.outputs.skip != 'true' &&
+      needs.native-binaries.result == 'success' &&
+      needs.linux-auto-install.result == 'success' &&
+      needs.windows-auto-install.result == 'success' &&
+      needs.macos-auto-install.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     concurrency:
@@ -245,249 +396,115 @@ jobs:
     permissions:
       contents: write
       id-token: write # OIDC for npm trusted publishing + provenance (US-036)
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
         with:
           fetch-depth: 0
-          # Token with contents:write so later push can update main.
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-07-16
+          ref: ${{ needs.release-prep.outputs.ref }}
 
       - name: Setup Node.js 24
         uses: actions/setup-node@249970729cb0ef3589644e289664e5dc5ba9c38 # v6.0.0
         with:
           node-version: "24.x"
           registry-url: https://registry.npmjs.org
-          # Never cache package-manager state for release/publish (npm trusted publishing guidance).
           package-manager-cache: false
 
-      # Trusted publishing needs npm ≥ 11.5.1 (OIDC exchange).
-      - name: Ensure npm CLI supports OIDC (≥ 11.5.1)
+      - name: Ensure pinned npm CLI
         run: npm install --global npm@11.17.0
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Sync to latest main before planning release
-        run: |
-          set -euo pipefail
-          git fetch origin main
-          # If this workflow run is stale (another push already moved main),
-          # rebase onto tip so we release once from the newest tree.
-          git pull --rebase origin main || {
-            echo "Could not rebase onto origin/main — aborting release for this run."
-            git rebase --abort 2>/dev/null || true
-            exit 1
-          }
-
-      - name: Detect bump kind from commits since last tag
-        id: bump
-        run: |
-          set -euo pipefail
-          LAST_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
-          if [ -n "$LAST_TAG" ]; then
-            RANGE="${LAST_TAG}..HEAD"
-            echo "Commits since $LAST_TAG:"
-            git log --oneline "$RANGE" || true
-            SUBJECTS="$(git log --pretty=%s "$RANGE" || true)"
-            BODIES="$(git log --pretty=%b "$RANGE" || true)"
-          else
-            echo "No previous v* tag — defaulting to patch."
-            SUBJECTS=""
-            BODIES=""
-          fi
-
-          # Conventional-commit style detection (best-effort).
-          # BREAKING / type!: → major; feat: → minor; else → patch.
-          KIND="patch"
-          if echo "$SUBJECTS" | grep -Eiq '^[a-z]+(\([^)]+\))?!:' \
-            || echo "$BODIES" | grep -Eiq '^BREAKING CHANGE:'; then
-            KIND="major"
-          elif echo "$SUBJECTS" | grep -Eiq '^feat(\([^)]+\))?:'; then
-            KIND="minor"
-          fi
-
-          # Allow override via marker in head commit message.
-          HEAD_MSG="${{ github.event.head_commit.message }}"
-          if echo "$HEAD_MSG" | grep -Eiq '\[release:[[:space:]]*major\]'; then
-            KIND="major"
-          elif echo "$HEAD_MSG" | grep -Eiq '\[release:[[:space:]]*minor\]'; then
-            KIND="minor"
-          elif echo "$HEAD_MSG" | grep -Eiq '\[release:[[:space:]]*patch\]'; then
-            KIND="patch"
-          fi
-
-          echo "kind=$KIND" >> "$GITHUB_OUTPUT"
-          echo "Detected bump kind: $KIND"
-
-      - name: Plan release (skip / tag-only / bump)
-        id: plan
-        run: |
-          set -euo pipefail
-          # release-plan.mjs prints key=value lines; last line is version.
-          OUT="$(node scripts/release-plan.mjs --kind "${{ steps.bump.outputs.kind }}")"
-          echo "$OUT"
-          # Avoid pipe subshell so GITHUB_OUTPUT is written in this shell.
-          while IFS= read -r line; do
-            case "$line" in
-              skip=*|mode=*|version=*|kind=*|reason=*)
-                echo "$line" >> "$GITHUB_OUTPUT"
-                ;;
-            esac
-          done <<< "$OUT"
-
-      - name: Skip when already released
-        if: steps.plan.outputs.skip == 'true'
-        run: |
-          echo "Skipping auto-release: ${{ steps.plan.outputs.reason }}"
-
-      - name: Bump version (when needed)
-        id: version
-        if: steps.plan.outputs.skip != 'true'
-        run: |
-          set -euo pipefail
-          MODE="${{ steps.plan.outputs.mode }}"
-          if [ "$MODE" = "bump" ]; then
-            NEW="$(node scripts/bump-version.mjs "${{ steps.bump.outputs.kind }}" | tail -n1)"
-          else
-            # tag-only: package.json already ahead of last tag — keep version
-            NEW="$(node -p "require('./package.json').version")"
-            echo "tag-only mode — publishing existing version $NEW"
-          fi
-          echo "version=$NEW" >> "$GITHUB_OUTPUT"
-          echo "New version: $NEW"
-
-      - name: Release check (post-bump)
-        if: steps.plan.outputs.skip != 'true'
-        run: npm run release:check
-
-      # GPG-sign commits and tags so GitHub displays the Verified badge.
-      # Requires GPG_PRIVATE_KEY secret (armored private key) and the
-      # corresponding public key registered on the GitHub account.
-      # Gracefully skips signing when the secret is not configured.
-      - name: Set up GPG signing
-        id: gpg
-        if: steps.plan.outputs.skip != 'true'
+      - name: Verify checkout is the tagged release commit
         env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          RELEASE_TAG: ${{ needs.release-prep.outputs.tag }}
         run: |
           set -euo pipefail
-          if [ -n "${GPG_PRIVATE_KEY:-}" ]; then
-            echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-            KEY_ID="$(gpg --list-secret-keys --keyid-format LONG | grep ^sec | head -1 | sed 's/.*\/\([^ ]*\).*/\1/')"
-            echo "GPG key imported: $KEY_ID"
-            git config user.signingkey "$KEY_ID"
-            git config commit.gpgsign true
-            git config tag.gpgSign true
-            echo "signed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "GPG_PRIVATE_KEY secret not set — signing skipped"
-            echo "signed=false" >> "$GITHUB_OUTPUT"
-          fi
+          test -n "$RELEASE_TAG"
+          test "$(git rev-list -n1 "$RELEASE_TAG")" = "$(git rev-parse HEAD)"
 
-      - name: Commit, tag, and push (rebase-retry)
-        if: steps.plan.outputs.skip != 'true'
-        run: |
-          set -euo pipefail
-          VERSION="${{ steps.version.outputs.version }}"
-          TAG="v${VERSION}"
-          SIGN_FLAG=""
-          if [ "${{ steps.gpg.outputs.signed }}" = "true" ]; then
-            SIGN_FLAG="--sign"
-          fi
-          # Rebase-retry push permanently avoids non-fast-forward races on main.
-          node scripts/git-push-release.mjs \
-            $SIGN_FLAG \
-            --tag "$TAG" \
-            --message "chore(release): ${VERSION}"
-          echo "Pushed release $TAG"
-
-      # OIDC trusted publishing + provenance (id-token: write).
-      # If version already exists on npm (e.g. one-time local first publish), skip
-      # put and continue to GitHub Release — do not fail the whole release job.
-      - name: Stage native binaries for npm pack
-        if: steps.plan.outputs.skip != 'true'
+      - name: Stage native binaries from this workflow run
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
 
       - name: Place platform binaries in bin/
-        if: steps.plan.outputs.skip != 'true'
         run: |
           set -euo pipefail
           node scripts/stage-native.mjs --from artifacts
           ls -la bin
 
       - name: Verify complete native package
-        if: steps.plan.outputs.skip != 'true'
         env:
           HARNESS_REQUIRED_NATIVE_TARGETS: "all"
         run: node scripts/pack-check.mjs
 
       - name: Generate release checksum manifest
-        if: steps.plan.outputs.skip != 'true'
         run: node scripts/checksums.mjs --out SHA256SUMS
+
+      - name: Attest release binaries and checksum
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
+        with:
+          subject-path: |
+            bin/harness-*
+            SHA256SUMS
+
+      - name: Sign checksum manifest when GPG key is configured
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
+            echo "GPG_PRIVATE_KEY not configured; GitHub artifact attestation remains available."
+            exit 0
+          fi
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --batch --yes --armor --detach-sign --output SHA256SUMS.sig SHA256SUMS
 
       - name: Publish to npm (OIDC + provenance)
         id: npm_publish
-        if: steps.plan.outputs.skip != 'true'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           NAME="$(node -p "require('./package.json').name")"
           VER="$(node -p "require('./package.json').version")"
           if npm view "${NAME}@${VER}" version >/dev/null 2>&1; then
-            echo "npm already has ${NAME}@${VER} — skip publish (use next bump for CI provenance)"
+            echo "npm already has ${NAME}@${VER} — skip publish"
             echo "published=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # GitHub Actions OIDC → provenance attestation (not available on laptops).
           npm publish --access public --provenance
           echo "published=true" >> "$GITHUB_OUTPUT"
 
       - name: Build release notes
-        if: steps.plan.outputs.skip != 'true'
         run: |
           set -euo pipefail
-          # Human CHANGELOG is primary; --with-export appends durable-history assist (US-038).
-          node scripts/release-notes.mjs "${{ steps.version.outputs.version }}" --with-export --out release-notes.md
-          echo "--- release notes preview ---"
-          head -n 40 release-notes.md || true
+          node scripts/release-notes.mjs "${{ needs.release-prep.outputs.version }}" --with-export --out release-notes.md
 
-      # Optional SBOM (US-036): SPDX from lockfile; attach to GitHub Release for consumers.
       - name: Generate SBOM (SPDX)
-        if: steps.plan.outputs.skip != 'true'
         run: |
           set -euo pipefail
           npm sbom --sbom-format spdx --package-lock-only > sbom.spdx.json
           test -s sbom.spdx.json
-          echo "SBOM bytes: $(wc -c < sbom.spdx.json)"
 
       - name: Create GitHub Release
-        if: steps.plan.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-prep.outputs.tag }}
         run: |
           set -euo pipefail
-          VERSION="${{ steps.version.outputs.version }}"
-          TAG="v${VERSION}"
-          # Idempotent if release already exists (re-run / race).
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists — updating notes + assets."
-            gh release edit "$TAG" --notes-file release-notes.md
-            gh release upload "$TAG" sbom.spdx.json --clobber
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --notes-file release-notes.md
+            gh release upload "$RELEASE_TAG" sbom.spdx.json --clobber
           else
-            gh release create "$TAG" \
-              --title "$TAG" \
+            gh release create "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
               --notes-file release-notes.md \
               --verify-tag \
               sbom.spdx.json
           fi
-          gh release upload "$TAG" \
+          assets=(
             bin/harness-x86_64-unknown-linux-gnu \
             bin/harness-aarch64-unknown-linux-gnu \
             bin/harness-x86_64-apple-darwin \
@@ -495,4 +512,6 @@ jobs:
             bin/harness-aarch64-pc-windows-msvc.exe \
             bin/harness-aarch64-apple-darwin \
             SHA256SUMS \
-            --clobber
+          )
+          if [ -f SHA256SUMS.sig ]; then assets+=(SHA256SUMS.sig); fi
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber

@@ -2,9 +2,9 @@
 #
 # Triggers:
 #   1. Tag push vX.Y.Z  (manual: git tag vX.Y.Z && git push origin vX.Y.Z)
-#      — only runs when the tag is pushed by a user/PAT (GITHUB_TOKEN tag
-#      pushes from CI do not re-trigger workflows; CI auto-release publishes
-#      inline instead).
+#      — runs when the tag is pushed by a user/PAT. GITHUB_TOKEN tag pushes
+#      from CI do not re-trigger a second workflow; the originating workflow
+#      publishes inline after the immutable build.
 #   2. workflow_dispatch — bump version (patch|minor|major), commit, tag, publish
 #
 # Authentication (US-036 / decision 0018):
@@ -13,9 +13,8 @@
 #     - Organization/user: vantanminh
 #     - Repository: 5harness
 #     - Workflow filename: release.yml  (when using this workflow)
-#   Note: npm allows one trusted publisher workflow per package. Primary
-#   auto-release uses ci.yml; for manual/tag publishes via this file, either
-#   switch the trusted publisher to release.yml or set optional NPM_TOKEN.
+#   Configure the trusted publisher for the workflow you actually use. No
+#   long-lived NPM_TOKEN fallback is read by this workflow.
 #   Requires npm CLI ≥ 11.5.1 and job permission id-token: write.
 #
 # Tag convention: vX.Y.Z must match package.json version (e.g. v0.9.11).
@@ -54,11 +53,85 @@ env:
   HARNESS_NO_UPDATE_CHECK: "1"
 
 jobs:
+  # Resolve the immutable release ref before building any native binary. A
+  # workflow_dispatch bump creates the tag here; a tag push is validated and
+  # reused as-is. Every downstream consumer checks out this same ref.
+  prepare:
+    name: Prepare release ref
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      ref: ${{ steps.release.outputs.ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-07-16
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e289664e5dc5ba9c38 # v6.0.0
+        with:
+          node-version: "24.x"
+          cache: npm
+
+      - name: Ensure pinned npm CLI
+        run: npm install --global npm@11.17.0
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare or validate tag
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_TAG: ${{ github.ref_name }}
+          BUMP_KIND: ${{ inputs.bump }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$(node scripts/bump-version.mjs "$BUMP_KIND" | tail -n1)"
+            TAG="v${VERSION}"
+            npm run release:check
+            SIGN_FLAG=""
+            if [ -n "${GPG_PRIVATE_KEY:-}" ]; then
+              echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+              KEY_ID="$(gpg --list-secret-keys --keyid-format LONG | grep '^sec' | head -1 | sed 's/.*\/\([^ ]*\).*/\1/')"
+              git config user.signingkey "$KEY_ID"
+              git config commit.gpgsign true
+              git config tag.gpgSign true
+              SIGN_FLAG="--sign"
+            fi
+            node scripts/git-push-release.mjs $SIGN_FLAG \
+              --tag "$TAG" \
+              --message "chore(release): ${VERSION}"
+          else
+            VERSION="$(node -p "require('./package.json').version")"
+            TAG="$EVENT_TAG"
+            case "$TAG" in v*) ;; *) echo "release ref must be a v* tag"; exit 1 ;; esac
+            if [ "${TAG#v}" != "$VERSION" ]; then
+              echo "Tag ${TAG} does not match package.json ${VERSION}"
+              exit 1
+            fi
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "ref=$TAG" >> "$GITHUB_OUTPUT"
   # Build one standalone binary for each OS supported by the direct installers
   # and npm launcher. The same artifacts are attached to GitHub Releases and
   # staged into the npm tarball by the publish jobs below.
   native-binaries:
     name: native ${{ matrix.target }}
+    needs: prepare
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -92,6 +165,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.ref }}
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-07-16
         with:
@@ -105,25 +180,23 @@ jobs:
           path: ${{ matrix.src }}
           if-no-files-found: error
 
-  # Manual release from Actions UI: bump → commit + tag → publish.
-  manual-release:
-    name: Manual release
-    needs: native-binaries
-    if: github.event_name == 'workflow_dispatch'
+  # Publish the exact artifacts built from prepare.outputs.ref. A tag push and
+  # workflow_dispatch therefore share one build-once/publish-everywhere path.
+  publish:
+    name: Publish release
+    needs: [prepare, native-binaries]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       contents: write
       id-token: write # OIDC for npm trusted publishing + provenance
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
         with:
           fetch-depth: 0
-          ref: main
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-07-16
+          ref: ${{ needs.prepare.outputs.ref }}
 
       - name: Setup Node.js 24
         uses: actions/setup-node@249970729cb0ef3589644e289664e5dc5ba9c38 # v6.0.0
@@ -132,38 +205,26 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
-      - name: Ensure npm CLI supports OIDC (≥ 11.5.1)
+      - name: Ensure pinned npm CLI
         run: npm install --global npm@11.17.0
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Bump version
-        id: version
+      - name: Verify checkout is the prepared release commit
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
-          NEW="$(node scripts/bump-version.mjs "${{ inputs.bump }}" | tail -n1)"
-          echo "version=$NEW" >> "$GITHUB_OUTPUT"
-          echo "New version: $NEW"
+          test "$(git rev-list -n1 "$RELEASE_TAG")" = "$(git rev-parse HEAD)"
 
-      - name: Download native release artifacts
+      - name: Download native release artifacts from this workflow run
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
 
       - name: Stage native binaries
         run: node scripts/stage-native.mjs --from artifacts
-
-      - name: Install Rust security tools
-        run: |
-          cargo install cargo-audit --locked
-          cargo install cargo-deny --locked
-
-      - name: Audit locked dependencies
-        run: cargo audit
-
-      - name: Enforce dependency policy
-        run: cargo deny check
 
       - name: Release check
         run: |
@@ -173,26 +234,7 @@ jobs:
       - name: Generate release checksum manifest
         run: node scripts/checksums.mjs --out SHA256SUMS
 
-      - name: Commit and tag
-        run: |
-          set -euo pipefail
-          VERSION="${{ steps.version.outputs.version }}"
-          TAG="v${VERSION}"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # CHANGELOG.md may be promoted from [Unreleased] by bump-version (US-038).
-          git add package.json package-lock.json Cargo.toml templates/AGENTS.md AGENTS.md CHANGELOG.md
-          git commit -m "chore(release): ${VERSION}"
-          git tag -a "$TAG" -m "Release ${TAG}"
-          git push origin HEAD:main
-          git push origin "$TAG"
-          echo "Pushed commit + tag $TAG"
-
       - name: Publish to npm (OIDC + provenance)
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           NAME="$(node -p "require('./package.json').name")"
@@ -207,7 +249,7 @@ jobs:
         run: |
           set -euo pipefail
           # Human CHANGELOG is primary; --with-export appends durable-history assist (US-038).
-          node scripts/release-notes.mjs "${{ steps.version.outputs.version }}" --with-export --out release-notes.md
+          node scripts/release-notes.mjs "${{ needs.prepare.outputs.version }}" --with-export --out release-notes.md
 
       - name: Generate SBOM (SPDX)
         run: |
@@ -215,148 +257,42 @@ jobs:
           npm sbom --sbom-format spdx --package-lock-only > sbom.spdx.json
           test -s sbom.spdx.json
 
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          VERSION="${{ steps.version.outputs.version }}"
-          TAG="v${VERSION}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --notes-file release-notes.md
-            gh release upload "$TAG" sbom.spdx.json --clobber
-          else
-            gh release create "$TAG" \
-              --title "$TAG" \
-              --notes-file release-notes.md \
-              --verify-tag \
-              sbom.spdx.json
-          fi
-          gh release upload "$TAG" \
-            bin/harness-x86_64-unknown-linux-gnu \
-            bin/harness-aarch64-unknown-linux-gnu \
-            bin/harness-x86_64-apple-darwin \
-            bin/harness-x86_64-pc-windows-msvc.exe \
-            bin/harness-aarch64-pc-windows-msvc.exe \
-            bin/harness-aarch64-apple-darwin \
-            SHA256SUMS \
-            --clobber
-
-  # Tag-triggered publish (manual git tag from a developer machine / PAT).
-  publish:
-    name: Publish to npm
-    needs: native-binaries
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: write
-      id-token: write # OIDC for npm trusted publishing + provenance
-    steps:
-      - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-07-16
-
-      - name: Setup Node.js 24
-        uses: actions/setup-node@249970729cb0ef3589644e289664e5dc5ba9c38 # v6.0.0
+      - name: Attest release binaries and checksum
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
         with:
-          node-version: "24.x"
-          registry-url: https://registry.npmjs.org
-          package-manager-cache: false
+          subject-path: |
+            bin/harness-*
+            SHA256SUMS
 
-      - name: Ensure npm CLI supports OIDC (≥ 11.5.1)
-        run: npm install --global npm@11.17.0
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Download native release artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          path: artifacts
-
-      - name: Stage native binaries
-        run: node scripts/stage-native.mjs --from artifacts
-
-      - name: Install Rust security tools
-        run: |
-          cargo install cargo-audit --locked
-          cargo install cargo-deny --locked
-
-      - name: Audit locked dependencies
-        run: cargo audit
-
-      - name: Enforce dependency policy
-        run: cargo deny check
-
-      - name: Release check
-        run: |
-          npm run release:check
-          HARNESS_REQUIRED_NATIVE_TARGETS=all node scripts/pack-check.mjs
-
-      - name: Generate release checksum manifest
-        run: node scripts/checksums.mjs --out SHA256SUMS
-
-      - name: Verify tag matches package version
-        id: version
-        run: |
-          set -euo pipefail
-          TAG="${GITHUB_REF_NAME#v}"
-          PKG="$(node -p "require('./package.json').version")"
-          if [ "$TAG" != "$PKG" ]; then
-            echo "Tag version ($TAG) does not match package.json ($PKG)"
-            exit 1
-          fi
-          echo "version=$PKG" >> "$GITHUB_OUTPUT"
-          echo "Publishing 5harness@$PKG"
-
-      - name: Publish to npm (OIDC + provenance)
+      - name: Sign checksum manifest when GPG key is configured
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          NAME="$(node -p "require('./package.json').name")"
-          VER="$(node -p "require('./package.json').version")"
-          if npm view "${NAME}@${VER}" version >/dev/null 2>&1; then
-            echo "npm already has ${NAME}@${VER} — skip publish"
+          if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
+            echo "GPG_PRIVATE_KEY not configured; GitHub artifact attestation remains available."
             exit 0
           fi
-          npm publish --access public --provenance
-
-      - name: Build release notes
-        run: |
-          set -euo pipefail
-          # Human CHANGELOG is primary; --with-export appends durable-history assist (US-038).
-          node scripts/release-notes.mjs "${{ steps.version.outputs.version }}" --with-export --out release-notes.md
-
-      - name: Generate SBOM (SPDX)
-        run: |
-          set -euo pipefail
-          npm sbom --sbom-format spdx --package-lock-only > sbom.spdx.json
-          test -s sbom.spdx.json
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --batch --yes --armor --detach-sign --output SHA256SUMS.sig SHA256SUMS
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
-          VERSION="${{ steps.version.outputs.version }}"
-          TAG="v${VERSION}"
-          # Idempotent: tag-triggered re-runs may already have a Release.
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists — updating notes + assets."
-            gh release edit "$TAG" --notes-file release-notes.md
-            gh release upload "$TAG" sbom.spdx.json --clobber
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --notes-file release-notes.md
+            gh release upload "$RELEASE_TAG" sbom.spdx.json --clobber
           else
-            gh release create "$TAG" \
-              --title "$TAG" \
+            gh release create "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
               --notes-file release-notes.md \
               --verify-tag \
               sbom.spdx.json
           fi
-          gh release upload "$TAG" \
+          assets=(
             bin/harness-x86_64-unknown-linux-gnu \
             bin/harness-aarch64-unknown-linux-gnu \
             bin/harness-x86_64-apple-darwin \
@@ -364,4 +300,6 @@ jobs:
             bin/harness-aarch64-pc-windows-msvc.exe \
             bin/harness-aarch64-apple-darwin \
             SHA256SUMS \
-            --clobber
+          )
+          if [ -f SHA256SUMS.sig ]; then assets+=(SHA256SUMS.sig); fi
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber

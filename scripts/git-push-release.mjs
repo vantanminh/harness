@@ -100,20 +100,6 @@ if (hasCommit) {
   console.log("No release file changes to commit (tag-only or already committed).");
 }
 
-if (tag) {
-  // Annotated tag on current HEAD (idempotent: fail if exists elsewhere)
-  const exists = run("git", ["rev-parse", "-q", "--verify", `refs/tags/${tag}`]);
-  if (exists.status === 0) {
-    console.log(`Tag ${tag} already exists locally.`);
-  } else {
-    const tagArgs = ["tag"];
-    if (sign) tagArgs.push("-s");
-    tagArgs.push("-a", tag, "-m", `Release ${tag}`);
-    must("git", tagArgs, "git tag");
-    console.log(`Created tag ${tag}${sign ? " (GPG-signed)" : ""}`);
-  }
-}
-
 let lastErr = "";
 for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
   console.log(`Push attempt ${attempt}/${MAX_ATTEMPTS}…`);
@@ -132,6 +118,25 @@ for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     process.exit(1);
   }
 
+  if (tag) {
+    // Create the tag only after the final rebase. Tagging before this point
+    // could leave a release tag pointing at a pre-rebase commit while main
+    // advances, violating the build-once/publish-everywhere invariant.
+    const head = must("git", ["rev-parse", "HEAD"], "resolve release HEAD").stdout.trim();
+    const existing = run("git", ["rev-parse", "-q", "--verify", `${tag}^{}`]);
+    if (existing.status === 0 && existing.stdout.trim() !== head) {
+      console.error(`tag ${tag} already points at ${existing.stdout.trim()}, not ${head}`);
+      process.exit(1);
+    }
+    if (existing.status !== 0) {
+      const tagArgs = ["tag"];
+      if (sign) tagArgs.push("-s");
+      tagArgs.push("-a", tag, "-m", `Release ${tag}`);
+      must("git", tagArgs, "git tag");
+      console.log(`Created tag ${tag}${sign ? " (GPG-signed)" : ""}`);
+    }
+  }
+
   const push = run("git", ["push", "origin", "HEAD:main"]);
   if (push.status === 0) {
     console.log("Pushed HEAD → origin/main");
@@ -141,7 +146,13 @@ for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         // tag may already exist on remote (another runner) — treat as ok if same
         console.error(pt.stderr);
         const remote = run("git", ["ls-remote", "--tags", "origin", tag]);
-        if (remote.status === 0 && remote.stdout.includes(tag)) {
+        const head = run("git", ["rev-parse", "HEAD"]).stdout.trim();
+        const remotePointsAtHead = remote.status === 0
+          && remote.stdout
+            .split("\n")
+            .map((line) => line.split("\t", 1)[0])
+            .some((hash) => hash === head);
+        if (remotePointsAtHead) {
           console.log(`Tag ${tag} already on remote — continuing.`);
         } else {
           process.exit(1);
