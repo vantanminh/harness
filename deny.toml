@@ -1,0 +1,31 @@
+# cargo-deny policy for the Rust runtime. Keep this file intentionally strict:
+# a new advisory, unreviewed source, wildcard dependency, or unapproved
+# license must be handled in a reviewed PR rather than silently entering a
+# release.
+
+[advisories]
+version = 2
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Zlib",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

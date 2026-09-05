@@ -85,6 +85,26 @@ jobs:
       - name: npm tarball install smoke
         run: npm run install:smoke
 
+  rust-security:
+    name: Rust advisory and license gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-07-16
+      - name: Install cargo-audit and cargo-deny
+        run: |
+          cargo install cargo-audit --locked
+          cargo install cargo-deny --locked
+      - name: Audit locked dependencies
+        run: cargo audit
+      - name: Enforce dependency policy
+        run: cargo deny check
+
   native-binaries:
     name: native ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -211,7 +231,7 @@ jobs:
   # (root cause of local non-fast-forward / package.json merge fights).
   auto-release:
     name: Auto-release
-    needs: [build-test, native-binaries, linux-auto-install, windows-auto-install, macos-auto-install]
+    needs: [build-test, rust-security, native-binaries, linux-auto-install, windows-auto-install, macos-auto-install]
     if: >
       github.ref == 'refs/heads/main' &&
       github.event_name == 'push' &&

@@ -116,6 +116,22 @@ fn ci_still_publishes_to_npmjs_with_provenance() {
         assert!(ci.contains(asset), "ci release assets lack {asset}");
         assert!(rel.contains(asset), "release assets lack {asset}");
     }
+    for workflow in [ci, rel] {
+        assert!(!workflow.contains("uses: actions/checkout@v"));
+        assert!(!workflow.contains("uses: actions/setup-node@v"));
+        assert!(!workflow.contains("uses: actions/upload-artifact@v"));
+        assert!(!workflow.contains("uses: actions/download-artifact@v"));
+        assert!(!workflow.contains("dtolnay/rust-toolchain@stable"));
+        assert!(!workflow.contains("npm@latest"));
+    }
+    let dependabot = fs::read_to_string(root().join(".github/dependabot.yml")).unwrap();
+    assert!(dependabot.contains("package-ecosystem: cargo"));
+    assert!(fs::read_to_string(root().join("rust-toolchain.toml"))
+        .unwrap()
+        .contains("channel = \"1.97.1\""));
+    assert!(fs::read_to_string(root().join("deny.toml"))
+        .unwrap()
+        .contains("unknown-registry = \"deny\""));
 }
 
 #[test]

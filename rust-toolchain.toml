@@ -1,2 +1,4 @@
 [toolchain]
-channel = "stable"
+# Pin release builds to a reviewed compiler. Renovate/Dependabot can update
+# this value deliberately; `stable` is mutable and is not reproducible.
+channel = "1.97.1"
