@@ -52,6 +52,10 @@ fn all_native_install_scripts_exist_and_support_local_artifacts() {
             text.contains("--version"),
             "{name} lacks post-install smoke check"
         );
+        assert!(
+            text.contains("SHA256SUMS") && text.contains("HARNESS_INSTALL_EXPECTED_SHA256"),
+            "{name} must verify a release checksum before execution"
+        );
     }
     let linux = fs::read_to_string(root().join("install/linux.sh")).unwrap();
     assert!(linux.contains("x86_64-unknown-linux-gnu"));
@@ -60,6 +64,9 @@ fn all_native_install_scripts_exist_and_support_local_artifacts() {
     assert!(win.contains("Expand-Archive"));
     assert!(win.contains("harness-$Target.exe"));
     let stage = fs::read_to_string(root().join("scripts/stage-native.mjs")).unwrap();
+    let checksums = fs::read_to_string(root().join("scripts/checksums.mjs")).unwrap();
+    assert!(checksums.contains("sha256"));
+    assert!(checksums.contains("SHA256SUMS"));
     for target in [
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",

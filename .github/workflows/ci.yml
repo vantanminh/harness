@@ -65,13 +65,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-07-16
 
       - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e289664e5dc5ba9c38 # v6.0.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
@@ -119,15 +119,15 @@ jobs:
             src: target/aarch64-pc-windows-msvc/release/harness.exe
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-07-16
         with:
           targets: ${{ matrix.target }}
       - name: Build release binary
         run: cargo build --release --target "${{ matrix.target }}"
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.src }}
@@ -140,9 +140,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
       - name: Download Linux binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: harness-x86_64-unknown-linux-gnu
           path: artifacts
@@ -150,6 +150,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x artifacts/harness || chmod +x artifacts/harness-x86_64-unknown-linux-gnu || true
+          sha256sum artifacts/harness* > artifacts/SHA256SUMS
           export HARNESS_INSTALL_FROM="$PWD/artifacts"
           export HARNESS_INSTALL_PREFIX="$HOME/.5harness-ci"
           export HARNESS_INSTALL_SKIP_PATH=1
@@ -163,15 +164,18 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
       - name: Download Windows binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: harness-x86_64-pc-windows-msvc.exe
           path: artifacts
       - name: Run local auto-install
         shell: pwsh
         run: |
+          $binary = Get-ChildItem -LiteralPath (Join-Path $PWD "artifacts") -File | Where-Object { $_.Name -match '^harness(\.exe)?$' } | Select-Object -First 1
+          if (-not $binary) { throw "native Windows artifact is missing" }
+          "$((Get-FileHash -LiteralPath $binary.FullName -Algorithm SHA256).Hash)  $($binary.Name)" | Set-Content -LiteralPath (Join-Path $PWD "artifacts\SHA256SUMS")
           $env:HARNESS_INSTALL_FROM = (Join-Path $PWD "artifacts")
           $env:HARNESS_INSTALL_PREFIX = Join-Path $env:RUNNER_TEMP "5harness-ci"
           $env:HARNESS_INSTALL_SKIP_PATH = "1"
@@ -185,9 +189,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
       - name: Download macOS binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: harness-aarch64-apple-darwin
           path: artifacts
@@ -195,6 +199,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x artifacts/harness || chmod +x artifacts/harness-aarch64-apple-darwin || true
+          shasum -a 256 artifacts/harness* > artifacts/SHA256SUMS
           export HARNESS_INSTALL_FROM="$PWD/artifacts"
           export HARNESS_INSTALL_PREFIX="$HOME/.5harness-ci"
           export HARNESS_INSTALL_SKIP_PATH=1
@@ -222,17 +227,17 @@ jobs:
       id-token: write # OIDC for npm trusted publishing + provenance (US-036)
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
         with:
           fetch-depth: 0
           # Token with contents:write so later push can update main.
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-07-16
 
       - name: Setup Node.js 24
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e289664e5dc5ba9c38 # v6.0.0
         with:
           node-version: "24.x"
           registry-url: https://registry.npmjs.org
@@ -241,7 +246,7 @@ jobs:
 
       # Trusted publishing needs npm ≥ 11.5.1 (OIDC exchange).
       - name: Ensure npm CLI supports OIDC (≥ 11.5.1)
-        run: npm install -g npm@latest
+        run: npm install --global npm@11.17.0
 
       - name: Install dependencies
         run: npm ci
@@ -385,7 +390,7 @@ jobs:
       # put and continue to GitHub Release — do not fail the whole release job.
       - name: Stage native binaries for npm pack
         if: steps.plan.outputs.skip != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
 
@@ -401,6 +406,10 @@ jobs:
         env:
           HARNESS_REQUIRED_NATIVE_TARGETS: "all"
         run: node scripts/pack-check.mjs
+
+      - name: Generate release checksum manifest
+        if: steps.plan.outputs.skip != 'true'
+        run: node scripts/checksums.mjs --out SHA256SUMS
 
       - name: Publish to npm (OIDC + provenance)
         id: npm_publish
@@ -465,4 +474,5 @@ jobs:
             bin/harness-x86_64-pc-windows-msvc.exe \
             bin/harness-aarch64-pc-windows-msvc.exe \
             bin/harness-aarch64-apple-darwin \
+            SHA256SUMS \
             --clobber

@@ -1,6 +1,7 @@
 # Automatic Windows install for 5harness (native CLI).
 # Documented command:
-#   irm https://raw.githubusercontent.com/vantanminh/5harness/main/install/windows.ps1 | iex
+#   irm https://raw.githubusercontent.com/vantanminh/5harness/v0.26.2/install/windows.ps1 -OutFile install.ps1
+#   powershell -File install.ps1
 # Local artifact (tests / offline):
 #   $env:HARNESS_INSTALL_FROM = "D:\path\to\artifact-dir-or-exe-or-zip"
 #   powershell -File install/windows.ps1
@@ -37,6 +38,48 @@ function Get-Target {
 }
 
 $script:TemporaryRoots = New-Object System.Collections.Generic.List[string]
+
+function Get-ExpectedChecksum([string]$Source) {
+  if ($env:HARNESS_INSTALL_EXPECTED_SHA256 -and $env:HARNESS_INSTALL_EXPECTED_SHA256.Trim()) {
+    return $env:HARNESS_INSTALL_EXPECTED_SHA256.Trim().ToLowerInvariant()
+  }
+  $manifest = $env:HARNESS_INSTALL_CHECKSUM_FILE
+  if (-not $manifest -and $env:HARNESS_INSTALL_FROM -and (Test-Path -LiteralPath $env:HARNESS_INSTALL_FROM -PathType Container)) {
+    foreach ($candidate in @(
+      (Join-Path $env:HARNESS_INSTALL_FROM "SHA256SUMS"),
+      (Join-Path $env:HARNESS_INSTALL_FROM "sha256sums.txt")
+    )) {
+      if (Test-Path -LiteralPath $candidate -PathType Leaf) { $manifest = $candidate; break }
+    }
+  }
+  if (-not $manifest -or -not (Test-Path -LiteralPath $manifest -PathType Leaf)) { return $null }
+  $name = if ($env:HARNESS_INSTALL_CHECKSUM_NAME -and $env:HARNESS_INSTALL_CHECKSUM_NAME.Trim()) {
+    $env:HARNESS_INSTALL_CHECKSUM_NAME.Trim()
+  } else {
+    [System.IO.Path]::GetFileName($Source)
+  }
+  foreach ($line in Get-Content -LiteralPath $manifest) {
+    if ($line -match '^\s*([0-9A-Fa-f]{64})\s+\*?(.+?)\s*$') {
+      $candidate = [System.IO.Path]::GetFileName($Matches[2].Trim())
+      if ($candidate -ieq $name) { return $Matches[1].ToLowerInvariant() }
+    }
+  }
+  return $null
+}
+
+function Verify-Checksum([string]$Source) {
+  $expected = Get-ExpectedChecksum $Source
+  if (-not $expected -or $expected -notmatch '^[0-9a-f]{64}$') {
+    Fail "no valid SHA-256 checksum found for $([System.IO.Path]::GetFileName($Source)); provide SHA256SUMS or HARNESS_INSTALL_EXPECTED_SHA256"
+  }
+  $actual = (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash.ToLowerInvariant()
+  $expectedBytes = [Convert]::FromHexString($expected)
+  $actualBytes = [Convert]::FromHexString($actual)
+  if (-not [System.Security.Cryptography.CryptographicOperations]::FixedTimeEquals($expectedBytes, $actualBytes)) {
+    Fail "SHA-256 mismatch for $([System.IO.Path]::GetFileName($Source)): expected $expected, got $actual"
+  }
+  Write-Host "Verified SHA-256 for $([System.IO.Path]::GetFileName($Source))"
+}
 
 function Find-LocalBinary([string]$From, [string]$Target) {
   if (-not $From -or -not $From.Trim()) { return $null }
@@ -106,6 +149,7 @@ function Install-Binary([string]$Source, [string]$Prefix) {
   if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
     Fail "native binary not found: $Source"
   }
+  Verify-Checksum $Source
   $binDir = Join-Path $Prefix "bin"
   New-Item -ItemType Directory -Path $binDir -Force | Out-Null
   $destination = Join-Path $binDir "harness.exe"
@@ -159,8 +203,18 @@ try {
 
   $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("5harness-$target-" + [guid]::NewGuid().ToString("n") + ".exe")
   $script:TemporaryRoots.Add($tmp)
+  $checksum = Join-Path ([System.IO.Path]::GetTempPath()) ("5harness-checksums-" + [guid]::NewGuid().ToString("n") + ".txt")
+  $script:TemporaryRoots.Add($checksum)
   Write-Host "Downloading 5harness $tag ($target) from GitHub ($repo)..."
   Invoke-WebRequest -Uri $url -OutFile $tmp -Headers @{ "User-Agent" = "5harness-install" }
+  $checksumUrl = "https://github.com/$repo/releases/download/$tag/SHA256SUMS"
+  try {
+    Invoke-WebRequest -Uri $checksumUrl -OutFile $checksum -Headers @{ "User-Agent" = "5harness-install" }
+  } catch {
+    Fail "release $tag does not provide SHA256SUMS; refusing to execute an unverified binary"
+  }
+  $env:HARNESS_INSTALL_CHECKSUM_FILE = $checksum
+  $env:HARNESS_INSTALL_CHECKSUM_NAME = "harness-$target.exe"
   Install-Binary $tmp $prefix
 } finally {
   foreach ($temporary in $script:TemporaryRoots) {

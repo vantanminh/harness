@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Automatic macOS install for 5harness (native CLI).
 # Documented command:
-#   curl -fsSL https://raw.githubusercontent.com/vantanminh/5harness/main/install/macos.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/vantanminh/5harness/v0.26.2/install/macos.sh -o install.sh
+#   bash install.sh
 # Local artifact (tests / CI):
 #   HARNESS_INSTALL_FROM=/path/to/artifact-dir-or-bin ./install/macos.sh
 #
@@ -35,12 +36,69 @@ bin_dir="${prefix}/bin"
 mkdir -p "${bin_dir}"
 
 tmp_file=""
+checksum_file=""
 cleanup() {
   if [[ -n "${tmp_file:-}" ]]; then
     rm -f "$tmp_file"
   fi
+  if [[ -n "${checksum_file:-}" ]]; then
+    rm -f "$checksum_file"
+  fi
 }
 trap cleanup EXIT
+
+sha256_file() {
+  local file="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print tolower($1)}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print tolower($1)}'
+  else
+    fail "shasum or sha256sum is required to verify the downloaded binary"
+  fi
+}
+
+checksum_equal() {
+  local expected="${1,,}" actual="${2,,}" diff=0 i
+  [[ "$expected" =~ ^[0-9a-f]{64}$ && "$actual" =~ ^[0-9a-f]{64}$ ]] || return 1
+  for ((i = 0; i < 64; i += 1)); do
+    [[ "${expected:i:1}" == "${actual:i:1}" ]] || diff=1
+  done
+  ((diff == 0))
+}
+
+expected_checksum() {
+  local source="$1" manifest="${HARNESS_INSTALL_CHECKSUM_FILE:-}" checksum_name="${HARNESS_INSTALL_CHECKSUM_NAME:-$(basename "$source")}"
+  if [[ -z "$manifest" && -d "${HARNESS_INSTALL_FROM:-}" ]]; then
+    for candidate in "${HARNESS_INSTALL_FROM}/SHA256SUMS" "${HARNESS_INSTALL_FROM}/sha256sums.txt"; do
+      if [[ -f "$candidate" ]]; then manifest="$candidate"; break; fi
+    done
+  fi
+  if [[ -n "${HARNESS_INSTALL_EXPECTED_SHA256:-}" ]]; then
+    printf '%s' "${HARNESS_INSTALL_EXPECTED_SHA256,,}"
+    return
+  fi
+  if [[ -n "$manifest" && -f "$manifest" ]]; then
+    awk -v name="$checksum_name" '
+      $1 ~ /^[[:xdigit:]]{64}$/ {
+        candidate=$2; sub(/^\*/, "", candidate); sub(/^.*\//, "", candidate)
+        if (candidate == name) { print tolower($1); exit }
+      }
+    ' "$manifest"
+  fi
+}
+
+verify_checksum() {
+  local source="$1" expected actual
+  expected="$(expected_checksum "$source")"
+  [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || \
+    fail "no valid SHA-256 checksum found for $(basename "$source"); provide SHA256SUMS or HARNESS_INSTALL_EXPECTED_SHA256"
+  actual="$(sha256_file "$source")"
+  if ! checksum_equal "$expected" "$actual"; then
+    fail "SHA-256 mismatch for $(basename "$source"): expected $expected, got $actual"
+  fi
+  echo "Verified SHA-256 for $(basename "$source")"
+}
 
 find_local() {
   local from="$1"
@@ -102,6 +160,7 @@ install_bin() {
   local src="$1"
   local dest="${bin_dir}/harness"
   [[ -f "$src" ]] || fail "native binary not found: $src"
+  verify_checksum "$src"
   cp "$src" "$dest"
   chmod 0755 "$dest"
   echo "Installed $dest"
@@ -134,7 +193,13 @@ asset="harness-${target}"
 url="https://github.com/${repo}/releases/download/${tag}/${asset}"
 tmp="$(mktemp "${TMPDIR:-/tmp}/5harness.XXXXXX")"
 tmp_file="$tmp"
+checksum_file="$(mktemp "${TMPDIR:-/tmp}/5harness-checksums.XXXXXX")"
 echo "Downloading 5harness ${tag} (${target}) from GitHub (${repo})..."
 curl --proto '=https' --tlsv1.2 -fL --retry 2 -o "$tmp" "$url" || \
   fail "could not download ${asset}; choose a published version with HARNESS_INSTALL_VERSION or use HARNESS_INSTALL_FROM"
+checksum_url="https://github.com/${repo}/releases/download/${tag}/SHA256SUMS"
+curl --proto '=https' --tlsv1.2 -fL --retry 2 -o "$checksum_file" "$checksum_url" || \
+  fail "release ${tag} does not provide SHA256SUMS; refusing to execute an unverified binary"
+export HARNESS_INSTALL_CHECKSUM_FILE="$checksum_file"
+export HARNESS_INSTALL_CHECKSUM_NAME="$asset"
 install_bin "$tmp"
