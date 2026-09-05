@@ -719,10 +719,16 @@ enum StoryCmd {
         dir: DirOpts,
         #[arg(long = "id")]
         id_flag: Option<String>,
+        /// Explicitly approve execution of the project-authored shell command.
+        #[arg(long = "allow-project-command")]
+        allow_project_command: bool,
     },
     VerifyAll {
         #[command(flatten)]
         dir: DirOpts,
+        /// Explicitly approve execution of all project-authored shell commands.
+        #[arg(long = "allow-project-command")]
+        allow_project_command: bool,
     },
 }
 
@@ -772,6 +778,9 @@ enum DecisionCmd {
         dir: DirOpts,
         #[arg(long = "id")]
         id_flag: Option<String>,
+        /// Explicitly approve execution of the project-authored shell command.
+        #[arg(long = "allow-project-command")]
+        allow_project_command: bool,
     },
 }
 
@@ -1725,7 +1734,12 @@ fn story_cmd(cmd: StoryCmd, cwd: &Path) -> Result<()> {
             None,
             reason,
         ),
-        StoryCmd::Verify { id, dir, id_flag } => {
+        StoryCmd::Verify {
+            id,
+            dir,
+            id_flag,
+            allow_project_command,
+        } => {
             let id = id
                 .or(id_flag)
                 .ok_or_else(|| Error::new("story verify requires an entity id"))?;
@@ -1734,6 +1748,12 @@ fn story_cmd(cmd: StoryCmd, cwd: &Path) -> Result<()> {
                 .ok_or_else(|| Error::new(format!("Story {id} not found")))?;
             let command = as_string(&file.data, "verify")
                 .ok_or_else(|| Error::new(format!("Story {id} has no verify command")))?;
+            require_project_command_trust(
+                &id,
+                &file.relative_path,
+                &command,
+                allow_project_command,
+            )?;
             let (passed, output) = run_verify_command(&command, &target);
             record_story_verification(&target, &id, passed, &output)?;
             println!(
@@ -1746,9 +1766,22 @@ fn story_cmd(cmd: StoryCmd, cwd: &Path) -> Result<()> {
                 Err(Error::new(format!("story verification failed: {output}")))
             }
         }
-        StoryCmd::VerifyAll { dir } => {
+        StoryCmd::VerifyAll {
+            dir,
+            allow_project_command,
+        } => {
             let target = dir.path(None, cwd);
             let files = crate::infra::entities::list_entity_files(&target, "story")?;
+            if !allow_project_command {
+                if let Some(file) = files
+                    .iter()
+                    .find(|file| as_string(&file.data, "verify").is_some())
+                {
+                    let id = as_string(&file.data, "id").unwrap_or_else(|| "<unknown>".into());
+                    let command = as_string(&file.data, "verify").unwrap_or_default();
+                    require_project_command_trust(&id, &file.relative_path, &command, false)?;
+                }
+            }
             let mut failures = 0;
             for file in files {
                 let Some(id) = as_string(&file.data, "id") else {
@@ -2041,7 +2074,12 @@ fn decision_cmd(cmd: DecisionCmd, cwd: &Path) -> Result<()> {
             println!("  file: {}", file.relative_path);
             Ok(())
         }
-        DecisionCmd::Verify { id, dir, id_flag } => {
+        DecisionCmd::Verify {
+            id,
+            dir,
+            id_flag,
+            allow_project_command,
+        } => {
             let id = id
                 .or(id_flag)
                 .ok_or_else(|| Error::new("decision verify requires an entity id"))?;
@@ -2050,6 +2088,12 @@ fn decision_cmd(cmd: DecisionCmd, cwd: &Path) -> Result<()> {
                 .ok_or_else(|| Error::new(format!("Decision {id} not found")))?;
             let command = as_string(&file.data, "verify")
                 .ok_or_else(|| Error::new(format!("Decision {id} has no verify command")))?;
+            require_project_command_trust(
+                &id,
+                &file.relative_path,
+                &command,
+                allow_project_command,
+            )?;
             let (passed, output) = run_verify_command(&command, &target);
             record_decision_verification(&target, &id, passed, &output)?;
             println!(
@@ -2216,6 +2260,20 @@ fn csv_json(value: Option<String>) -> serde_json::Value {
             .map(|v| serde_json::Value::String(v.to_string()))
             .collect(),
     )
+}
+
+fn require_project_command_trust(
+    id: &str,
+    relative_path: &str,
+    command: &str,
+    allow_project_command: bool,
+) -> Result<()> {
+    if allow_project_command {
+        return Ok(());
+    }
+    Err(Error::new(format!(
+        "refusing to execute project-authored verify command for {id} ({relative_path}): {command}\nrerun with --allow-project-command after reviewing the command"
+    )))
 }
 
 fn run_verify_command(command: &str, project_root: &Path) -> (bool, String) {

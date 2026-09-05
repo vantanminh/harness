@@ -205,6 +205,59 @@ fn init_then_intake_story_decision_backlog_query_search_get() {
 }
 
 #[test]
+fn project_verify_commands_require_explicit_trust() {
+    let dir = tmp("harness-verify-trust-");
+    let d = dir.to_str().unwrap();
+    let init = run(&["init", d], None);
+    assert!(init.status.success(), "{}", stderr(&init) + &stdout(&init));
+
+    let add = run(
+        &[
+            "story",
+            "add",
+            "--dir",
+            d,
+            "--id",
+            "US-VERIFY",
+            "--title",
+            "Trust gate",
+            "--lane",
+            "normal",
+            "--verify",
+            "echo verify-ok",
+        ],
+        None,
+    );
+    assert!(add.status.success(), "{}", stderr(&add) + &stdout(&add));
+
+    let refused = run(&["story", "verify", "US-VERIFY", "--dir", d], None);
+    assert!(!refused.status.success());
+    let refused_text = stderr(&refused) + &stdout(&refused);
+    assert!(
+        refused_text.contains("--allow-project-command"),
+        "{refused_text}"
+    );
+
+    let allowed = run(
+        &[
+            "story",
+            "verify",
+            "US-VERIFY",
+            "--dir",
+            d,
+            "--allow-project-command",
+        ],
+        None,
+    );
+    assert!(
+        allowed.status.success(),
+        "{}",
+        stderr(&allowed) + &stdout(&allowed)
+    );
+    assert!(stdout(&allowed).contains("verification: passed"));
+}
+
+#[test]
 fn mutations_are_serialized_and_paths_are_contained() {
     let dir = tmp("harness-hardening-");
     let d = dir.to_str().unwrap();
