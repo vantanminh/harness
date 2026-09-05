@@ -6,7 +6,7 @@ use std::process::Command;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
-use crate::infra::entities::atomic_write;
+use crate::infra::entities::{atomic_write, ensure_directory_no_symlink};
 
 fn local_dir(project_root: &Path) -> PathBuf {
     project_root.join(".5harness").join("local")
@@ -15,7 +15,7 @@ fn local_dir(project_root: &Path) -> PathBuf {
 fn safe_local_dir(project_root: &Path) -> Result<PathBuf> {
     let root = project_root.canonicalize()?;
     let dir = local_dir(project_root);
-    fs::create_dir_all(&dir)?;
+    ensure_directory_no_symlink(&dir)?;
     let canonical = dir.canonicalize()?;
     if !canonical.starts_with(&root) {
         return Err(Error::new(format!(

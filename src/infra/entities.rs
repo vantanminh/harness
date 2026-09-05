@@ -34,7 +34,7 @@ pub struct MutationLock {
 impl MutationLock {
     pub fn acquire(project_root: &Path) -> Result<Self> {
         let state = resolve_project_state_root(project_root);
-        fs::create_dir_all(&state)?;
+        ensure_directory_no_symlink(&state)?;
         let path = state.join("mutation.lock");
         let timeout_ms = std::env::var("HARNESS_LOCK_TIMEOUT_MS")
             .ok()
@@ -136,7 +136,7 @@ fn contained_path(
     let candidate = root.join(&relative);
     if for_write {
         if let Some(parent) = candidate.parent() {
-            fs::create_dir_all(parent)?;
+            ensure_directory_no_symlink(parent)?;
             let canonical_parent = fs::canonicalize(parent)?;
             if !canonical_parent.starts_with(&root) {
                 return Err(Error::new(format!(
@@ -158,8 +158,8 @@ fn contained_path(
 pub fn ensure_entity_dirs(project_root: &Path) -> Result<()> {
     for ty in ENTITY_TYPES {
         let relative = entity_dir(ty)?;
-        let _ = contained_path(project_root, relative, true)?;
-        fs::create_dir_all(project_root.join(relative))?;
+        let (dir, _) = contained_path(project_root, relative, true)?;
+        ensure_directory_no_symlink(&dir)?;
         let _ = contained_path(project_root, relative, false)?;
     }
     Ok(())
@@ -323,7 +323,7 @@ pub fn next_numeric_entity_id(project_root: &Path, ty: &str, prefix: &str) -> Re
 
 pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        ensure_directory_no_symlink(parent)?;
     }
     if path
         .symlink_metadata()
@@ -350,6 +350,60 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+/// Create a directory path one component at a time, refusing symlinked or
+/// non-directory ancestors. `create_dir_all` follows a symlinked component,
+/// so using it for security-sensitive state could write outside the intended
+/// root before a later canonicalization check notices the escape.
+pub fn ensure_directory_no_symlink(path: &Path) -> Result<()> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            Component::RootDir => current.push(std::path::MAIN_SEPARATOR.to_string()),
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                return Err(Error::new(format!(
+                    "directory path contains parent traversal: {}",
+                    path.display()
+                )))
+            }
+            Component::Normal(name) => current.push(name),
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(Error::new(format!(
+                    "refusing to traverse symlinked directory: {}",
+                    current.display()
+                )))
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(Error::new(format!(
+                    "expected directory but found a file: {}",
+                    current.display()
+                )))
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                match fs::create_dir(&current) {
+                    Ok(()) => {}
+                    Err(create_err) if create_err.kind() == std::io::ErrorKind::AlreadyExists => {
+                        let metadata = fs::symlink_metadata(&current)?;
+                        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                            return Err(Error::new(format!(
+                                "refusing unsafe directory race at {}",
+                                current.display()
+                            )));
+                        }
+                    }
+                    Err(create_err) => return Err(create_err.into()),
+                }
+            }
+            Err(err) => return Err(err.into()),
+        }
     }
     Ok(())
 }
