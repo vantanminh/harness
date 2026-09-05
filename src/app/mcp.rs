@@ -164,7 +164,7 @@ fn handle_mcp_request_with_auth(root: Option<&PathBuf>, body: &str, authenticate
                 Err(err) => json!({
                     "jsonrpc":"2.0",
                     "id": id,
-                    "error":{"code":-32000,"message":err.to_string()}
+                    "error":{"code":-32000,"message":crate::error::redact_sensitive(&err.to_string())}
                 }),
             }
         }

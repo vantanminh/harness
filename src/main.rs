@@ -1,17 +1,18 @@
 fn finish(result: harness::Result<()>) {
     if let Err(err) = result {
+        let message = harness::error::redact_sensitive(&err.message);
         if std::env::var_os("HARNESS_JSON_ERRORS").is_some() {
             eprintln!(
                 "{}",
                 serde_json::json!({
                     "ok": false,
                     "code": err.code,
-                    "message": err.message,
+                    "message": message,
                     "exitCode": err.exit_code(),
                 })
             );
         } else {
-            eprintln!("{err}");
+            eprintln!("{message}");
         }
         std::process::exit(err.exit_code());
     }
