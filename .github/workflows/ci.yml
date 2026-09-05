@@ -6,7 +6,7 @@
 # See: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
 #
 # Auto-release flow (push to main only):
-#   1. build-test matrix: ubuntu/windows/macos × Node 22.x/24.x (US-035)
+#   1. build-test matrix: ubuntu/windows/macos × Node 22.19.0/24.19.0 (US-035)
 #   2. native-binaries matrix: Linux/macOS/Windows × x64/ARM64
 #   3. auto-release (ubuntu + Node 24 only): bump → commit + tag → npm publish
 #      with OIDC trusted publishing + provenance (US-036 / decision 0018)
@@ -61,7 +61,7 @@ jobs:
       matrix:
         # engines: >=22.5.0 — OS coverage for the global CLI (US-035 / 0018).
         os: [ubuntu-latest, windows-latest, macos-latest]
-        node-version: ["22.x", "24.x"]
+        node-version: ["22.19.0", "24.19.0"]
 
     steps:
       - name: Checkout
@@ -138,7 +138,7 @@ jobs:
       - name: Setup Node.js 24
         uses: actions/setup-node@249970729cb0ef3589644e289664e5dc5ba9c38 # v6.0.0
         with:
-          node-version: "24.x"
+          node-version: "24.19.0"
           cache: npm
 
       - name: Ensure pinned npm CLI
@@ -407,7 +407,7 @@ jobs:
       - name: Setup Node.js 24
         uses: actions/setup-node@249970729cb0ef3589644e289664e5dc5ba9c38 # v6.0.0
         with:
-          node-version: "24.x"
+          node-version: "24.19.0"
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
