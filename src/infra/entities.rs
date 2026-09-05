@@ -157,7 +157,10 @@ fn contained_path(
 
 pub fn ensure_entity_dirs(project_root: &Path) -> Result<()> {
     for ty in ENTITY_TYPES {
-        fs::create_dir_all(project_root.join(entity_dir(ty)?))?;
+        let relative = entity_dir(ty)?;
+        let _ = contained_path(project_root, relative, true)?;
+        fs::create_dir_all(project_root.join(relative))?;
+        let _ = contained_path(project_root, relative, false)?;
     }
     Ok(())
 }
@@ -243,6 +246,16 @@ pub fn write_entity_file(
 ) -> Result<EntityFile> {
     let (absolute_path, relative_path) = contained_path(project_root, relative_path, true)?;
     let content = serialize_entity_file(data, body);
+    if absolute_path
+        .symlink_metadata()
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(Error::new(format!(
+            "refusing to replace symlinked entity path: {}",
+            absolute_path.display()
+        )));
+    }
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -259,7 +272,7 @@ pub fn write_entity_file(
 }
 
 pub fn list_entity_files(project_root: &Path, ty: &str) -> Result<Vec<EntityFile>> {
-    let dir = project_root.join(entity_dir(ty)?);
+    let (dir, _) = contained_path(project_root, entity_dir(ty)?, false)?;
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -312,6 +325,16 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    if path
+        .symlink_metadata()
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(Error::new(format!(
+            "refusing to replace symlinked path: {}",
+            path.display()
+        )));
+    }
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -319,5 +342,14 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
     let tmp = path.with_extension(format!("tmp.{nanos}"));
     fs::write(&tmp, content)?;
     fs::rename(&tmp, path)?;
+    #[cfg(unix)]
+    if path
+        .components()
+        .any(|component| component.as_os_str() == ".5harness")
+        || path.file_name().is_some_and(|name| name == "registry.json")
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
     Ok(())
 }

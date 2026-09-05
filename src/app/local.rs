@@ -12,8 +12,18 @@ fn local_dir(project_root: &Path) -> PathBuf {
     project_root.join(".5harness").join("local")
 }
 
-fn file_for(project_root: &Path, kind: &str) -> PathBuf {
-    local_dir(project_root).join(format!("{kind}.jsonl"))
+fn safe_local_dir(project_root: &Path) -> Result<PathBuf> {
+    let root = project_root.canonicalize()?;
+    let dir = local_dir(project_root);
+    fs::create_dir_all(&dir)?;
+    let canonical = dir.canonicalize()?;
+    if !canonical.starts_with(&root) {
+        return Err(Error::new(format!(
+            "local state path escapes project root: {}",
+            dir.display()
+        )));
+    }
+    Ok(canonical)
 }
 
 fn now() -> String {
@@ -21,7 +31,7 @@ fn now() -> String {
 }
 
 fn append(project_root: &Path, kind: &str, mut value: Value) -> Result<Value> {
-    fs::create_dir_all(local_dir(project_root))?;
+    let dir = safe_local_dir(project_root)?;
     let id = format!(
         "{}-{}",
         kind.to_ascii_uppercase(),
@@ -34,7 +44,17 @@ fn append(project_root: &Path, kind: &str, mut value: Value) -> Result<Value> {
     } else {
         return Err(Error::new("local record must be a JSON object"));
     }
-    let path = file_for(project_root, kind);
+    let path = dir.join(format!("{kind}.jsonl"));
+    if path
+        .symlink_metadata()
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(Error::new(format!(
+            "refusing to append through symlinked local state: {}",
+            path.display()
+        )));
+    }
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{}", serde_json::to_string(&value)?)?;
     file.sync_data()?;
@@ -81,9 +101,18 @@ pub fn remove_tool(project_root: &Path, name: &str) -> Result<bool> {
 }
 
 pub fn read_records(project_root: &Path, kind: &str) -> Result<Vec<Value>> {
-    let path = file_for(project_root, kind);
+    let path = safe_local_dir(project_root)?.join(format!("{kind}.jsonl"));
     if !path.exists() {
         return Ok(Vec::new());
+    }
+    if !path
+        .canonicalize()?
+        .starts_with(project_root.canonicalize()?)
+    {
+        return Err(Error::new(format!(
+            "local state path escapes project root: {}",
+            path.display()
+        )));
     }
     let file = fs::File::open(path)?;
     let mut out = Vec::new();
@@ -98,14 +127,14 @@ pub fn read_records(project_root: &Path, kind: &str) -> Result<Vec<Value>> {
 }
 
 fn write_records(project_root: &Path, kind: &str, records: &[Value]) -> Result<()> {
-    fs::create_dir_all(local_dir(project_root))?;
+    let dir = safe_local_dir(project_root)?;
     let payload = records
         .iter()
         .map(serde_json::to_string)
         .collect::<std::result::Result<Vec<_>, _>>()?
         .join("\n");
     atomic_write(
-        &file_for(project_root, kind),
+        &dir.join(format!("{kind}.jsonl")),
         &if payload.is_empty() {
             String::new()
         } else {

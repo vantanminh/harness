@@ -257,6 +257,52 @@ fn project_verify_commands_require_explicit_trust() {
     assert!(stdout(&allowed).contains("verification: passed"));
 }
 
+#[cfg(unix)]
+#[test]
+fn symlinked_entity_and_local_state_paths_fail_closed() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tmp("harness-symlink-boundary-");
+    let d = dir.to_str().unwrap();
+    let init = run(&["init", d], None);
+    assert!(init.status.success(), "{}", stderr(&init) + &stdout(&init));
+
+    let outside = dir
+        .parent()
+        .unwrap()
+        .join(format!("harness-symlink-outside-{}", std::process::id()));
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("US-ESCAPE.md"), "# escaped\n").unwrap();
+    symlink(
+        outside.join("US-ESCAPE.md"),
+        dir.join("docs/stories/US-ESCAPE.md"),
+    )
+    .unwrap();
+
+    let query = run(&["query", "matrix", "--dir", d], None);
+    assert!(!query.status.success());
+    let query_text = stderr(&query) + &stdout(&query);
+    assert!(
+        query_text.to_lowercase().contains("escapes project root"),
+        "{query_text}"
+    );
+
+    let local = dir.join(".5harness/local");
+    fs::create_dir_all(&local).unwrap();
+    let outside_log = outside.join("traces.jsonl");
+    fs::write(&outside_log, "").unwrap();
+    let local_link = local.join("traces.jsonl");
+    symlink(&outside_log, &local_link).unwrap();
+    let trace = run(&["trace", "--dir", d, "--summary", "symlink test"], None);
+    assert!(!trace.status.success());
+    let trace_text = stderr(&trace) + &stdout(&trace);
+    assert!(
+        trace_text.to_lowercase().contains("symlink"),
+        "{trace_text}"
+    );
+    assert!(fs::read_to_string(outside_log).unwrap().is_empty());
+}
+
 #[test]
 fn mutations_are_serialized_and_paths_are_contained() {
     let dir = tmp("harness-hardening-");
