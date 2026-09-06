@@ -76,8 +76,17 @@ fn all_native_install_scripts_exist_and_support_local_artifacts() {
     assert!(win.contains("harness-$Target.exe"));
     let stage = fs::read_to_string(root().join("scripts/stage-native.mjs")).unwrap();
     let checksums = fs::read_to_string(root().join("scripts/checksums.mjs")).unwrap();
+    let build = fs::read_to_string(root().join("scripts/build-native.mjs")).unwrap();
+    let bump = fs::read_to_string(root().join("scripts/bump-version.mjs")).unwrap();
+    let release_notes = fs::read_to_string(root().join("scripts/release-notes.mjs")).unwrap();
     assert!(checksums.contains("sha256"));
     assert!(checksums.contains("SHA256SUMS"));
+    assert!(build.contains("assertNoSymlinkComponents"));
+    assert!(build.contains("assertRegularFile"));
+    assert!(bump.contains("assertNoSymlinkComponents"));
+    assert!(bump.contains("readText"));
+    assert!(release_notes.contains("assertNoSymlinkComponents"));
+    assert!(release_notes.contains("writeOutput"));
     for target in [
         "x86_64-unknown-linux-gnu",
         "aarch64-unknown-linux-gnu",

@@ -25,6 +25,41 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 
+function failUnsafePath(label, file, error) {
+  const detail = error?.message ? ` (${error.message})` : "";
+  throw new Error(`release-notes: refusing unsafe ${label} path ${file}${detail}`);
+}
+
+function assertNoSymlinkComponents(file, label) {
+  const resolved = path.resolve(file);
+  const rootPath = path.parse(resolved).root;
+  let current = rootPath;
+  const components = resolved.slice(rootPath.length).split(path.sep).filter(Boolean);
+  for (const part of components) {
+    current = path.join(current, part);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) {
+        failUnsafePath(label, file);
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") failUnsafePath(label, file, error);
+    }
+  }
+}
+
+function writeOutput(file, content) {
+  assertNoSymlinkComponents(file, "release output");
+  try {
+    if (fs.existsSync(file) && !fs.lstatSync(file).isFile()) {
+      failUnsafePath("release output", file);
+    }
+    fs.writeFileSync(file, content, "utf8");
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("release-notes:")) throw error;
+    failUnsafePath("release output", file, error);
+  }
+}
+
 /**
  * @param {string} changelog
  * @param {string} version
@@ -229,7 +264,7 @@ async function main() {
   });
 
   if (out) {
-    fs.writeFileSync(out, notes, "utf8");
+    writeOutput(out, notes);
     console.error(`Wrote release notes → ${out}`);
   } else {
     process.stdout.write(notes);

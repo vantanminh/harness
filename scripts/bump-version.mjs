@@ -29,6 +29,49 @@ function fail(message) {
   process.exit(1);
 }
 
+function assertNoSymlinkComponents(file, label) {
+  const resolved = path.resolve(root, file);
+  const rootPath = path.parse(resolved).root;
+  let current = rootPath;
+  const components = resolved.slice(rootPath.length).split(path.sep).filter(Boolean);
+  for (const part of components) {
+    current = path.join(current, part);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) {
+        fail(`refusing ${label} through symlink: ${path.relative(root, current)}`);
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+}
+
+function readText(rel, required = true) {
+  const full = path.join(root, rel);
+  assertNoSymlinkComponents(full, rel);
+  if (!fs.existsSync(full)) {
+    if (required) fail(`${rel} is missing`);
+    return null;
+  }
+  const stat = fs.lstatSync(full);
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    fail(`${rel} must be a regular file`);
+  }
+  return fs.readFileSync(full, "utf8");
+}
+
+function writeText(rel, text) {
+  const full = path.join(root, rel);
+  assertNoSymlinkComponents(full, rel);
+  if (fs.existsSync(full)) {
+    const stat = fs.lstatSync(full);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      fail(`${rel} must be a regular file`);
+    }
+  }
+  fs.writeFileSync(full, text, "utf8");
+}
+
 function parseSemver(v) {
   const m = String(v).trim().match(SEMVER_RE);
   if (!m) fail(`invalid semver: ${v}`);
@@ -65,20 +108,20 @@ function bump(current, kind) {
 }
 
 function readJson(rel) {
-  return JSON.parse(fs.readFileSync(path.join(root, rel), "utf8"));
+  return JSON.parse(readText(rel));
 }
 
 function writeJson(rel, data) {
-  fs.writeFileSync(path.join(root, rel), `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  writeText(rel, `${JSON.stringify(data, null, 2)}\n`);
 }
 
 function replaceInFile(rel, replacer) {
   const full = path.join(root, rel);
-  if (!fs.existsSync(full)) return false;
-  const before = fs.readFileSync(full, "utf8");
+  const before = readText(rel, false);
+  if (before === null) return false;
   const after = replacer(before);
   if (after === before) return false;
-  fs.writeFileSync(full, after, "utf8");
+  writeText(rel, after);
   return true;
 }
 
@@ -99,8 +142,9 @@ writeJson("package.json", pkg);
 
 // package-lock.json (root fields only — keep deps intact)
 const lockPath = path.join(root, "package-lock.json");
-if (fs.existsSync(lockPath)) {
-  const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+const lockText = readText("package-lock.json", false);
+if (lockText !== null) {
+  const lock = JSON.parse(lockText);
   lock.version = newVersion;
   if (lock.packages && lock.packages[""]) {
     lock.packages[""].version = newVersion;
@@ -110,7 +154,7 @@ if (fs.existsSync(lockPath)) {
       lock.packages[""].name = pkg.name;
     }
   }
-  fs.writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`, "utf8");
+  writeText("package-lock.json", `${JSON.stringify(lock, null, 2)}\n`);
 }
 
 // Cargo.toml package.version (first version key after [package])
@@ -190,12 +234,12 @@ function promoteUnreleased(changelog, version, date) {
 
 const changelogRel = "CHANGELOG.md";
 const changelogFull = path.join(root, changelogRel);
-if (fs.existsSync(changelogFull)) {
+const changelogText = readText(changelogRel, false);
+if (changelogText !== null) {
   const today = new Date().toISOString().slice(0, 10);
-  const beforeCl = fs.readFileSync(changelogFull, "utf8");
-  const cut = promoteUnreleased(beforeCl, newVersion, today);
+  const cut = promoteUnreleased(changelogText, newVersion, today);
   if (cut.promoted) {
-    fs.writeFileSync(changelogFull, cut.text, "utf8");
+    writeText(changelogRel, cut.text);
     console.log(
       `bump-version: promoted CHANGELOG [Unreleased] → [${newVersion}] - ${today}`,
     );
