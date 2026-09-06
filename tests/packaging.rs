@@ -138,6 +138,18 @@ fn ci_still_publishes_to_npmjs_with_provenance() {
     assert!(rel.contains("prepare:"));
     assert!(rel.contains("needs: prepare"));
     assert!(rel.contains("ref: ${{ needs.prepare.outputs.ref }}"));
+    let codeql = fs::read_to_string(root().join(".github/workflows/codeql.yml")).unwrap();
+    assert!(codeql.contains("security-events: write"));
+    assert!(codeql.contains("github/codeql-action/init@3e6af16ff035267728e2ebc35df5d4c4cf249f81a"));
+    assert!(
+        codeql.contains("github/codeql-action/autobuild@3e6af16ff035267728e2ebc35df5d4c4cf249f81a")
+    );
+    assert!(
+        codeql.contains("github/codeql-action/analyze@3e6af16ff035267728e2ebc35df5d4c4cf249f81a")
+    );
+    assert!(!codeql.contains("github/codeql-action/init@v"));
+    assert!(!codeql.contains("github/codeql-action/autobuild@v"));
+    assert!(!codeql.contains("github/codeql-action/analyze@v"));
     let dependabot = fs::read_to_string(root().join(".github/dependabot.yml")).unwrap();
     assert!(dependabot.contains("package-ecosystem: cargo"));
     assert!(fs::read_to_string(root().join("rust-toolchain.toml"))
