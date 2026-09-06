@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::io::Cursor;
-use std::net::TcpListener;
+use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use argon2::{
     password_hash::{PasswordHash, SaltString},
@@ -22,6 +23,63 @@ use crate::VERSION;
 use super::catalog::{build_catalog, by_type};
 use super::link::list_projects;
 use super::query::{query_matrix, query_stats};
+
+const DASHBOARD_AUTH_FAILURE_LIMIT: u32 = 30;
+const DASHBOARD_AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
+const MAX_DASHBOARD_AUTH_FAILURE_BUCKETS: usize = 4_096;
+
+struct AuthFailureLimiter {
+    buckets: HashMap<String, (Instant, u32)>,
+}
+
+impl AuthFailureLimiter {
+    fn new() -> Self {
+        Self {
+            buckets: HashMap::new(),
+        }
+    }
+
+    fn key(remote: Option<&SocketAddr>) -> String {
+        remote
+            .map(|address| address.ip().to_string())
+            .unwrap_or_else(|| "<unknown>".into())
+    }
+
+    fn cleanup(&mut self) {
+        let now = Instant::now();
+        self.buckets
+            .retain(|_, (started, _)| now.duration_since(*started) < DASHBOARD_AUTH_FAILURE_WINDOW);
+    }
+
+    fn can_attempt(&mut self, remote: Option<&SocketAddr>) -> bool {
+        self.cleanup();
+        let key = Self::key(remote);
+        match self.buckets.get(&key) {
+            Some((_, count)) => *count < DASHBOARD_AUTH_FAILURE_LIMIT,
+            None => self.buckets.len() < MAX_DASHBOARD_AUTH_FAILURE_BUCKETS,
+        }
+    }
+
+    fn record_failure(&mut self, remote: Option<&SocketAddr>) {
+        self.cleanup();
+        let key = Self::key(remote);
+        if !self.buckets.contains_key(&key)
+            && self.buckets.len() >= MAX_DASHBOARD_AUTH_FAILURE_BUCKETS
+        {
+            return;
+        }
+        let now = Instant::now();
+        let entry = self.buckets.entry(key).or_insert((now, 0));
+        if now.duration_since(entry.0) >= DASHBOARD_AUTH_FAILURE_WINDOW {
+            *entry = (now, 0);
+        }
+        entry.1 = entry.1.saturating_add(1);
+    }
+
+    fn clear(&mut self, remote: Option<&SocketAddr>) {
+        self.buckets.remove(&Self::key(remote));
+    }
+}
 
 pub struct RunningServer {
     pub url: String,
@@ -178,7 +236,8 @@ pub fn start_dashboard(
         .unwrap_or(local_url);
     let shutdown = Arc::new(AtomicBool::new(false));
     let flag = shutdown.clone();
-    let handle = thread::spawn(move || dashboard_loop(server, flag));
+    let public_bind = !is_loopback_bind_host(host);
+    let handle = thread::spawn(move || dashboard_loop(server, flag, public_bind));
     if serve_forever {
         loop {
             thread::sleep(Duration::from_secs(60));
@@ -193,7 +252,8 @@ pub fn start_dashboard(
     })
 }
 
-fn dashboard_loop(server: Server, shutdown: Arc<AtomicBool>) {
+fn dashboard_loop(server: Server, shutdown: Arc<AtomicBool>, public_bind: bool) {
+    let mut auth_failures = AuthFailureLimiter::new();
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;
@@ -203,10 +263,29 @@ fn dashboard_loop(server: Server, shutdown: Arc<AtomicBool>) {
                 let url = request.url().to_string();
                 let method = request.method().clone();
                 let path = url.split('?').next().unwrap_or("/");
-                let authorized = path == "/api/health"
-                    || (path == "/mcp" && method == Method::Get)
-                    || dashboard_authorized(request.headers());
-                let (status, content_type, body) = if authorized {
+                let remote = request.remote_addr();
+                let public_endpoint =
+                    path == "/api/health" || (path == "/mcp" && method == Method::Get);
+                let throttled =
+                    public_bind && !public_endpoint && !auth_failures.can_attempt(remote);
+                let authorized = public_endpoint
+                    || (!throttled
+                        && (!public_bind || dashboard_password_configured())
+                        && dashboard_authorized(request.headers()));
+                if public_bind && !public_endpoint {
+                    if authorized {
+                        auth_failures.clear(remote);
+                    } else if !throttled {
+                        auth_failures.record_failure(remote);
+                    }
+                }
+                let (status, content_type, body) = if throttled {
+                    (
+                        429,
+                        "application/json; charset=utf-8".into(),
+                        r#"{"error":"too many dashboard authentication failures"}"#.into(),
+                    )
+                } else if authorized {
                     route(&method, &url)
                 } else {
                     (
@@ -247,6 +326,10 @@ fn dashboard_loop(server: Server, shutdown: Arc<AtomicBool>) {
                     response.add_header(
                         Header::from_bytes(&b"WWW-Authenticate"[..], &b"Bearer"[..]).unwrap(),
                     );
+                }
+                if status == 429 {
+                    response
+                        .add_header(Header::from_bytes(&b"Retry-After"[..], &b"60"[..]).unwrap());
                 }
                 let _ = request.respond(response);
             }
@@ -414,4 +497,23 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AuthFailureLimiter, DASHBOARD_AUTH_FAILURE_LIMIT};
+    use std::net::SocketAddr;
+
+    #[test]
+    fn public_auth_failures_are_bounded_per_source() {
+        let mut limiter = AuthFailureLimiter::new();
+        let remote: SocketAddr = "127.0.0.1:3927".parse().unwrap();
+        for _ in 0..DASHBOARD_AUTH_FAILURE_LIMIT {
+            assert!(limiter.can_attempt(Some(&remote)));
+            limiter.record_failure(Some(&remote));
+        }
+        assert!(!limiter.can_attempt(Some(&remote)));
+        limiter.clear(Some(&remote));
+        assert!(limiter.can_attempt(Some(&remote)));
+    }
 }
