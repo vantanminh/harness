@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::io::{Cursor, Read};
-use std::net::TcpListener;
+use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
@@ -31,6 +32,41 @@ const MAX_MCP_STRING_BYTES: usize = 64 * 1024;
 const MAX_MCP_DEPTH: usize = 32;
 const MAX_MCP_COLLECTION_ITEMS: usize = 1_000;
 const DEFAULT_MCP_TOKEN_TTL_SECS: u64 = 86_400;
+const DEFAULT_MCP_RATE_LIMIT_PER_MINUTE: u32 = 120;
+const MAX_MCP_RATE_LIMIT_BUCKETS: usize = 4_096;
+const MCP_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+
+struct RateLimiter {
+    limit: u32,
+    buckets: HashMap<String, (Instant, u32)>,
+}
+
+impl RateLimiter {
+    fn new(limit: u32) -> Self {
+        Self {
+            limit: limit.max(1),
+            buckets: HashMap::new(),
+        }
+    }
+
+    fn allow(&mut self, remote: Option<&SocketAddr>) -> bool {
+        let now = Instant::now();
+        self.buckets
+            .retain(|_, (started, _)| now.duration_since(*started) < MCP_RATE_LIMIT_WINDOW);
+        let key = remote
+            .map(|address| address.ip().to_string())
+            .unwrap_or_else(|| "<unknown>".into());
+        if !self.buckets.contains_key(&key) && self.buckets.len() >= MAX_MCP_RATE_LIMIT_BUCKETS {
+            return false;
+        }
+        let entry = self.buckets.entry(key).or_insert((now, 0));
+        if now.duration_since(entry.0) >= MCP_RATE_LIMIT_WINDOW {
+            *entry = (now, 0);
+        }
+        entry.1 = entry.1.saturating_add(1);
+        entry.1 <= self.limit
+    }
+}
 
 pub fn mcp_tools() -> Value {
     json!([
@@ -534,6 +570,12 @@ pub fn start_mcp(
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_MCP_TOKEN_TTL_SECS);
+    let rate_limit_per_minute = std::env::var("HARNESS_MCP_RATE_LIMIT_PER_MINUTE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MCP_RATE_LIMIT_PER_MINUTE);
+    let public_bind = !is_loopback_bind_host(host);
     let token_expires_at = std::time::Instant::now() + Duration::from_secs(ttl_secs);
     let project_id = std::fs::read_to_string(project_root.join("AGENTS.md"))
         .ok()
@@ -562,6 +604,8 @@ pub fn start_mcp(
             issuer,
             token,
             token_expires_at,
+            public_bind,
+            rate_limit_per_minute,
         )
     });
     if serve_forever {
@@ -578,6 +622,7 @@ pub fn start_mcp(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mcp_loop(
     server: Server,
     shutdown: Arc<AtomicBool>,
@@ -586,7 +631,10 @@ fn mcp_loop(
     issuer: String,
     token: String,
     token_expires_at: std::time::Instant,
+    public_bind: bool,
+    rate_limit_per_minute: u32,
 ) {
+    let mut rate_limiter = RateLimiter::new(rate_limit_per_minute);
     loop {
         if shutdown.load(Ordering::SeqCst) {
             break;
@@ -595,6 +643,7 @@ fn mcp_loop(
             Ok(Some(mut request)) => {
                 let url = request.url().to_string();
                 let method = request.method().clone();
+                let rate_limited = public_bind && !rate_limiter.allow(request.remote_addr());
                 let oversized_headers = request
                     .headers()
                     .iter()
@@ -606,7 +655,7 @@ fn mcp_loop(
                     .and_then(|header| header.value.as_str().parse::<usize>().ok())
                     .is_some_and(|length| length > MAX_MCP_BODY_BYTES);
                 let mut body = String::new();
-                if !oversized {
+                if !rate_limited && !oversized {
                     let mut limited = request.as_reader().take((MAX_MCP_BODY_BYTES + 1) as u64);
                     let _ = limited.read_to_string(&mut body);
                 }
@@ -655,7 +704,16 @@ fn mcp_loop(
                 let project_bound = project_id
                     .as_deref()
                     .is_some_and(|id| supplied_project == Some(id));
-                let (status, ctype, payload, www_authenticate) = match (method, path) {
+                let (status, ctype, payload, www_authenticate) = if rate_limited {
+                    (
+                        429,
+                        "application/json; charset=utf-8",
+                        serde_json::to_string(&json!({"error":"rate limit exceeded"}))
+                            .unwrap_or_else(|_| "{}".into()),
+                        false,
+                    )
+                } else {
+                    match (method, path) {
                     (Method::Get, "/.well-known/oauth-protected-resource") => (
                         200,
                         "application/json; charset=utf-8",
@@ -727,7 +785,8 @@ fn mcp_loop(
                         false,
                     ),
                     (Method::Options, _) => (204, "text/plain", String::new(), false),
-                    _ => (404, "text/plain; charset=utf-8", "not found".into(), false),
+                        _ => (404, "text/plain; charset=utf-8", "not found".into(), false),
+                    }
                 };
                 let mut response = Response::new(
                     StatusCode(status),
@@ -753,6 +812,10 @@ fn mcp_loop(
                         Header::from_bytes(&b"WWW-Authenticate"[..], &b"Bearer"[..]).unwrap(),
                     );
                 }
+                if status == 429 {
+                    response
+                        .add_header(Header::from_bytes(&b"Retry-After"[..], &b"60"[..]).unwrap());
+                }
                 let _ = request.respond(response);
             }
             Ok(None) => continue,
@@ -767,4 +830,17 @@ fn mcp_loop(
 
 pub fn query_view_json_pub(root: &Path, view: &str) -> Result<Value> {
     query_view_json(root, view)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RateLimiter;
+
+    #[test]
+    fn rate_limiter_bounds_requests_per_source() {
+        let mut limiter = RateLimiter::new(2);
+        assert!(limiter.allow(None));
+        assert!(limiter.allow(None));
+        assert!(!limiter.allow(None));
+    }
 }
