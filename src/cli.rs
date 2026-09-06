@@ -2328,10 +2328,40 @@ fn spawn_verify_reader<R: Read + Send + 'static>(reader: R) -> Receiver<(Vec<u8>
     receiver
 }
 
-fn receive_verify_output(receiver: Receiver<(Vec<u8>, bool)>) -> (Vec<u8>, bool) {
-    receiver
-        .recv_timeout(VERIFY_OUTPUT_DRAIN_TIMEOUT)
-        .unwrap_or_else(|_| (Vec::new(), true))
+fn receive_verify_outputs(
+    stdout_receiver: Option<Receiver<(Vec<u8>, bool)>>,
+    stderr_receiver: Option<Receiver<(Vec<u8>, bool)>>,
+) -> ((Vec<u8>, bool), (Vec<u8>, bool)) {
+    let deadline = std::time::Instant::now() + VERIFY_OUTPUT_DRAIN_TIMEOUT;
+    let mut stdout = None;
+    let mut stderr = None;
+    while (stdout.is_none() || stderr.is_none()) && std::time::Instant::now() < deadline {
+        if stdout.is_none() {
+            match stdout_receiver.as_ref().map(|receiver| receiver.try_recv()) {
+                Some(Ok(value)) => stdout = Some(value),
+                Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) | None => {
+                    stdout = Some((Vec::new(), true))
+                }
+                Some(Err(std::sync::mpsc::TryRecvError::Empty)) => {}
+            }
+        }
+        if stderr.is_none() {
+            match stderr_receiver.as_ref().map(|receiver| receiver.try_recv()) {
+                Some(Ok(value)) => stderr = Some(value),
+                Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) | None => {
+                    stderr = Some((Vec::new(), true))
+                }
+                Some(Err(std::sync::mpsc::TryRecvError::Empty)) => {}
+            }
+        }
+        if stdout.is_none() || stderr.is_none() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+    (
+        stdout.unwrap_or_else(|| (Vec::new(), true)),
+        stderr.unwrap_or_else(|| (Vec::new(), true)),
+    )
 }
 
 fn terminate_verify_process(child: &mut std::process::Child) {
@@ -2421,8 +2451,8 @@ fn run_verify_command_with_timeout(
         }
     };
 
-    let (stdout, stdout_truncated) = stdout_reader.map(receive_verify_output).unwrap_or_default();
-    let (stderr, stderr_truncated) = stderr_reader.map(receive_verify_output).unwrap_or_default();
+    let ((stdout, stdout_truncated), (stderr, stderr_truncated)) =
+        receive_verify_outputs(stdout_reader, stderr_reader);
     let mut text = String::from_utf8_lossy(&stdout).to_string();
     text.push_str(&String::from_utf8_lossy(&stderr));
     if stdout_truncated || stderr_truncated {
@@ -2474,4 +2504,32 @@ fn run_dashboard(host: &str, port: u16, forever: bool, public_url: Option<&str>)
     }
     let _ = dash;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_verify_output, run_verify_command_with_timeout};
+    use std::io::Cursor;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn verify_reader_caps_bytes_without_unbounded_allocation() {
+        let (bytes, truncated) = read_verify_output(Cursor::new(vec![b'x'; 70 * 1024]));
+        assert!(truncated);
+        assert_eq!(bytes.len(), 64 * 1024);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_command_timeout_returns_and_reports_timeout() {
+        let started = Instant::now();
+        let (ok, output) = run_verify_command_with_timeout(
+            "sleep 5",
+            &std::env::temp_dir(),
+            Duration::from_millis(100),
+        );
+        assert!(!ok);
+        assert!(output.contains("verification timed out"), "{output}");
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
 }
