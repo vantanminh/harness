@@ -55,7 +55,7 @@ local boundary and must use a TLS reverse proxy plus authentication.
 | Project-authored tool probe executes attacker code | `tool check` requires the same explicit approval and bounded command shape; command output/time are bounded; MCP does not expose tool-check execution | An approved probe still has the local OS user's permissions; use a trusted project script or external sandbox |
 | Path traversal or symlink escape | Canonical containment checks for entity, local, peer, index, and report paths; symlink targets rejected; atomic owner-only writes | Filesystem races outside the process cannot be fully prevented without OS sandboxing |
 | Secret leakage through diagnostics | Central redaction for bearer/password/token shapes in CLI and MCP errors; no tokens in durable payloads | Redaction is best effort and cannot identify every custom secret format |
-| Malformed input causes excessive work | Bounded MCP body/header/string/depth/collection sizes; bounded request/response payloads; bounded entity context output; public per-source rate limit; parser errors are safe responses | Slow-client read timeouts and process-level isolation remain deployment concerns |
+| Malformed input causes excessive work | Bounded MCP body/header/string/depth/collection and response sizes; dashboard header/password limits; bounded entity context output; public per-source rate limits; parser errors are safe responses | Slow-client read timeouts and process-level isolation remain deployment concerns |
 | XSS/clickjacking/cache disclosure in dashboard | Escaped project fields, CSP, `nosniff`, `Referrer-Policy`, `X-Frame-Options`, and `Cache-Control: no-store` | A browser extension or compromised local browser is outside the boundary |
 
 ## Security assumptions

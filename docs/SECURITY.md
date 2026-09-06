@@ -102,7 +102,9 @@ claim to be a sandbox today.
 Public dashboard authentication failures are limited to 30 attempts per source
 per minute and return `429` with `Retry-After: 60`; loopback dashboards are not
 rate-limited. If the credential record disappears while a public dashboard is
-running, protected requests fail closed rather than becoming anonymous.
+running, protected requests fail closed rather than becoming anonymous. Dashboard
+requests reject more than 64 headers, 16 KiB per header value, or 64 KiB of
+header bytes with `431`; supplied passwords are capped at 4 KiB before Argon2id.
 
 The bearer token is never accepted in a query string. Dashboard cookies never
 authorize MCP calls. The native dashboard does not issue browser session
