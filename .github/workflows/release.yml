@@ -73,7 +73,7 @@ jobs:
       ref: ${{ steps.release.outputs.ref }}
     steps:
       - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.1
         with:
           fetch-depth: 0
           # A recovery dispatch checks out the immutable existing tag while
@@ -198,7 +198,7 @@ jobs:
             src: target/aarch64-pc-windows-msvc/release/harness.exe
     steps:
       - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.1
         with:
           ref: ${{ needs.prepare.outputs.ref }}
       - name: Setup Rust
@@ -228,7 +228,7 @@ jobs:
       attestations: write
     steps:
       - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6.0.1
         with:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.ref }}
