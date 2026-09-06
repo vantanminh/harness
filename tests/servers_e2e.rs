@@ -252,6 +252,12 @@ fn mcp_mutations_require_token_and_project_binding() {
     );
     assert_eq!(status, 200);
     assert!(response.contains("Intake IN-001"), "{response}");
+    let calls = std::fs::read_to_string(tmp.join(".5harness/local/mcp-calls.jsonl")).unwrap();
+    assert!(calls.contains("tools/call"), "{calls}");
+    assert!(
+        !calls.contains("test-token"),
+        "MCP audit log leaked token: {calls}"
+    );
     let conflict_path = format!("/mcp?project={project_id}");
     let (status, _) = http_post_with_headers(
         "127.0.0.1:3943",

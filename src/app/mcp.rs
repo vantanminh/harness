@@ -21,6 +21,7 @@ use super::durable::{
     update_story, StoryUpdate,
 };
 use super::index::{ensure_index, format_search_hits, search_index};
+use super::local::append_mcp_call;
 use super::project_link;
 use super::query::{query_matrix, query_stats, query_view_json};
 use super::status::{doctor_json, next_items, status_json};
@@ -645,6 +646,10 @@ fn mcp_loop(
             Ok(Some(mut request)) => {
                 let url = request.url().to_string();
                 let method = request.method().clone();
+                let method_name = format!("{method:?}");
+                let remote = request
+                    .remote_addr()
+                    .map(|address| address.ip().to_string());
                 let rate_limited = public_bind && !rate_limiter.allow(request.remote_addr());
                 let oversized_headers = request
                     .headers()
@@ -678,6 +683,12 @@ fn mcp_loop(
                         .ok()
                         .is_some_and(|value| !json_within_limits(&value, 0))
                 };
+                let rpc_method = serde_json::from_str::<Value>(&body).ok().and_then(|value| {
+                    value
+                        .get("method")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                });
                 let path = url.split('?').next().unwrap_or("/");
                 let authorization = request
                     .headers()
@@ -832,6 +843,18 @@ fn mcp_loop(
                     response
                         .add_header(Header::from_bytes(&b"Retry-After"[..], &b"60"[..]).unwrap());
                 }
+                let _ = append_mcp_call(
+                    &project_root,
+                    json!({
+                        "method": method_name,
+                        "rpc_method": rpc_method,
+                        "path": path,
+                        "status": status,
+                        "authenticated": authenticated,
+                        "rate_limited": rate_limited,
+                        "source": remote,
+                    }),
+                );
                 let _ = request.respond(response);
             }
             Ok(None) => continue,

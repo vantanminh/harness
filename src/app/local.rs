@@ -69,6 +69,10 @@ pub fn append_worklog(project_root: &Path, value: Value) -> Result<Value> {
     append(project_root, "worklog", value)
 }
 
+pub fn append_mcp_call(project_root: &Path, value: Value) -> Result<Value> {
+    append(project_root, "mcp-calls", value)
+}
+
 pub fn upsert_tool(project_root: &Path, value: Value) -> Result<Value> {
     let name = value
         .get("name")
