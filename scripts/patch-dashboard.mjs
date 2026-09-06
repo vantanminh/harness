@@ -59,7 +59,7 @@ function renderLoginPage(error?: string): string {
       <input type="password" id="password" name="password" autocomplete="current-password" />
       <button type="submit">Sign in</button>
     </form>
-    <p class="hint">Default: admin / admin &mdash; change via <code>harness dashboard set-password</code></p>
+    <p class="hint">There is no default password. Set one with <code>harness dashboard set-password</code> before exposing the dashboard.</p>
   </div>
 </body>
 </html>\`;
@@ -276,4 +276,3 @@ if (secondH1 > firstH1) {
 
 fs.writeFileSync("src/application/dashboard.ts", dash, "utf8");
 console.log("All steps complete.");
-
