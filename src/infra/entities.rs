@@ -379,10 +379,13 @@ pub fn ensure_directory_no_symlink(path: &Path) -> Result<()> {
         }
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
+                if is_trusted_system_symlink(&current) {
+                    continue;
+                }
                 return Err(Error::new(format!(
                     "refusing to traverse symlinked directory: {}",
                     current.display()
-                )))
+                )));
             }
             Ok(metadata) if !metadata.is_dir() => {
                 return Err(Error::new(format!(
@@ -410,4 +413,26 @@ pub fn ensure_directory_no_symlink(path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// macOS keeps a few root-owned compatibility aliases (`/var`, `/tmp`, and
+/// `/etc`) pointing into `/private`. They are safe to traverse because an
+/// unprivileged process cannot replace those aliases; arbitrary symlinks still
+/// fail closed below.
+fn is_trusted_system_symlink(path: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let expected = match path {
+            p if p == Path::new("/var") => Some(Path::new("/private/var")),
+            p if p == Path::new("/tmp") => Some(Path::new("/private/tmp")),
+            p if p == Path::new("/etc") => Some(Path::new("/private/etc")),
+            _ => None,
+        };
+        expected.is_some_and(|expected| fs::canonicalize(path).ok().as_deref() == Some(expected))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+        false
+    }
 }
