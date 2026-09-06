@@ -385,6 +385,31 @@ fn symlinked_entity_and_local_state_paths_fail_closed() {
     assert!(fs::read_to_string(outside_log).unwrap().is_empty());
 }
 
+#[cfg(unix)]
+#[test]
+fn symlinked_global_registry_is_ignored() {
+    use std::os::unix::fs::symlink;
+
+    let root = tmp("harness-registry-symlink-");
+    let outside = tmp("harness-registry-outside-");
+    fs::write(
+        outside.join("registry.json"),
+        r#"{"version":1,"projects":[{"id":"escape","path":"/outside","name":"outside-secret","linked_at":"now","updated_at":"now","remote":null}]}"#,
+    )
+    .unwrap();
+    symlink(outside.join("registry.json"), root.join("registry.json")).unwrap();
+    let output = Command::new(bin())
+        .args(["projects"])
+        .env("HARNESS_HOME", &root)
+        .env("HARNESS_NO_UPDATE_CHECK", "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(!text.contains("outside-secret"), "{text}");
+    assert!(!text.contains("/outside"), "{text}");
+}
+
 #[test]
 fn mutations_are_serialized_and_paths_are_contained() {
     let dir = tmp("harness-hardening-");

@@ -19,8 +19,27 @@ pub fn get_registry_path() -> PathBuf {
 }
 
 pub fn read_registry() -> ProjectRegistry {
-    let file = get_registry_path();
-    if !file.exists() {
+    let home = get_harness_home();
+    // Registry state is machine-local and can contain paths that the dashboard
+    // later opens. Never follow a symlinked home, registry file, or registry
+    // path that resolves outside the configured home directory.
+    if !home.is_dir() || ensure_directory_no_symlink(&home).is_err() {
+        return empty_registry();
+    }
+    let file = registry_file_path(&home);
+    let Ok(metadata) = fs::symlink_metadata(&file) else {
+        return empty_registry();
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return empty_registry();
+    }
+    let Ok(canonical_home) = home.canonicalize() else {
+        return empty_registry();
+    };
+    let Ok(canonical_file) = file.canonicalize() else {
+        return empty_registry();
+    };
+    if !canonical_file.starts_with(&canonical_home) {
         return empty_registry();
     }
     match fs::read_to_string(&file) {
