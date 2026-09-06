@@ -76,6 +76,9 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-07-16
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
 
       - name: Setup Node.js 24
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
@@ -181,6 +184,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-07-16
         with:
+          toolchain: 1.97.1
           targets: ${{ matrix.target }}
       - name: Build release binary
         run: cargo build --release --target "${{ matrix.target }}"
