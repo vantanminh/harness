@@ -99,6 +99,11 @@ claim to be a sandbox today.
 | JSON-RPC POSTs | `200` + `application/json` response body; malformed or over-limit requests fail before tool execution |
 | Human approval | Native Rust runtime has no browser OAuth/session route; dashboard requests use the password header/Bearer, while dashboard `/mcp` GET is discovery-only |
 
+Public dashboard authentication failures are limited to 30 attempts per source
+per minute and return `429` with `Retry-After: 60`; loopback dashboards are not
+rate-limited. If the credential record disappears while a public dashboard is
+running, protected requests fail closed rather than becoming anonymous.
+
 The bearer token is never accepted in a query string. Dashboard cookies never
 authorize MCP calls. The native dashboard does not issue browser session
 cookies or implement `/login`/`/authorize`; use the standalone MCP process for
