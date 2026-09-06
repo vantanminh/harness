@@ -97,15 +97,13 @@ claim to be a sandbox today.
 | Response hardening | `Cache-Control: no-store`, CSP, `nosniff`, `Referrer-Policy`, and `X-Frame-Options: DENY` |
 | Call log | `.5harness/local/mcp-calls.jsonl` under the project (machine-local) |
 | JSON-RPC POSTs | `200` + `application/json` response body; malformed or over-limit requests fail before tool execution |
-| Human approval | Shared `/login` session only; `/authorize` never collects credentials |
+| Human approval | Native Rust runtime has no browser OAuth/session route; dashboard requests use the password header/Bearer, while dashboard `/mcp` GET is discovery-only |
 
 The bearer token is never accepted in a query string. Dashboard cookies never
-authorize MCP calls. Treat the startup token as a secret and rotate it by
+authorize MCP calls. The native dashboard does not issue browser session
+cookies or implement `/login`/`/authorize`; use the standalone MCP process for
+authenticated tool calls. Treat the startup token as a secret and rotate it by
 restarting the process.
-Unauthenticated GET `/authorize` redirects to `/login?redirect=…` (path + query
-preserved; open redirects rejected). The approval page's CSP permits form
-navigation only to the server itself and the origin of that already validated,
-registered callback; it never uses a wildcard callback destination.
 
 MCP calls are bound to the project supplied to `harness mcp --dir`. Every tool
 request must provide `X-Harness-Project: <id>` or `?project=<id>` matching that
