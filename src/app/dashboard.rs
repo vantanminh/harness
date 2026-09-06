@@ -49,7 +49,7 @@ pub fn set_dashboard_password(password: &str) -> Result<std::path::PathBuf> {
         ));
     }
     let home = resolve_harness_home();
-    std::fs::create_dir_all(&home)?;
+    crate::infra::entities::ensure_directory_no_symlink(&home)?;
     let path = dashboard_password_path();
     let mut salt_bytes = [0u8; 16];
     getrandom::getrandom(&mut salt_bytes)

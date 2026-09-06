@@ -8,7 +8,7 @@ use crate::domain::registry::{
 };
 use crate::error::Result;
 
-use super::entities::atomic_write;
+use super::entities::{atomic_write, ensure_directory_no_symlink};
 
 pub fn get_harness_home() -> PathBuf {
     resolve_harness_home()
@@ -32,7 +32,7 @@ pub fn read_registry() -> ProjectRegistry {
 
 pub fn write_registry(registry: &ProjectRegistry) -> Result<PathBuf> {
     let home = get_harness_home();
-    fs::create_dir_all(&home)?;
+    ensure_directory_no_symlink(&home)?;
     let file = registry_file_path(&home);
     let payload = format!("{}\n", serde_json::to_string_pretty(registry)?);
     atomic_write(&file, &payload)?;

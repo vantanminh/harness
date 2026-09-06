@@ -2268,9 +2268,11 @@ fn require_project_command_trust(
     command: &str,
     allow_project_command: bool,
 ) -> Result<()> {
+    crate::app::durable::validate_verify_command_for_cli(command)?;
     if allow_project_command {
         return Ok(());
     }
+    let command = crate::error::redact_sensitive(command);
     Err(Error::new(format!(
         "refusing to execute project-authored verify command for {id} ({relative_path}): {command}\nrerun with --allow-project-command after reviewing the command"
     )))
@@ -2292,12 +2294,13 @@ fn run_verify_command(command: &str, project_root: &Path) -> (bool, String) {
         Ok(output) => {
             let mut text = String::from_utf8_lossy(&output.stdout).to_string();
             text.push_str(&String::from_utf8_lossy(&output.stderr));
+            let text = crate::error::redact_sensitive(&text);
             (
                 output.status.success(),
                 text.trim().chars().take(2_000).collect(),
             )
         }
-        Err(err) => (false, err.to_string()),
+        Err(err) => (false, crate::error::redact_sensitive(&err.to_string())),
     }
 }
 

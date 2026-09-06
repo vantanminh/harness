@@ -21,6 +21,37 @@ fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+const MAX_VERIFY_COMMAND_BYTES: usize = 8 * 1024;
+
+/// Verify commands are intentionally shell-backed, but their persisted shape
+/// must stay unambiguous.  A single line also keeps frontmatter parsing and
+/// operator review deterministic; execution still requires an explicit trust
+/// flag in the CLI.
+fn validate_verify_command(command: &str) -> Result<()> {
+    if command.trim().is_empty() {
+        return Err(Error::new("verify command must not be empty"));
+    }
+    if command.as_bytes().contains(&0) {
+        return Err(Error::new("verify command must not contain NUL bytes"));
+    }
+    if command.contains(['\n', '\r']) {
+        return Err(Error::new(
+            "verify command must be a single line; split complex checks into a project script",
+        ));
+    }
+    if command.len() > MAX_VERIFY_COMMAND_BYTES {
+        return Err(Error::new(format!(
+            "verify command exceeds the {}-byte limit",
+            MAX_VERIFY_COMMAND_BYTES
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_verify_command_for_cli(command: &str) -> Result<()> {
+    validate_verify_command(command)
+}
+
 fn with_links(mut data: Frontmatter, links_csv: Option<&str>) -> Frontmatter {
     if let Some(links) = parse_links_csv(links_csv) {
         insert_arr(&mut data, "links", links);
@@ -64,6 +95,9 @@ pub fn add_story(
     insert_int(&mut data, "e2e", 0);
     insert_int(&mut data, "platform", 0);
     set_opt(&mut data, "contract", contract);
+    if let Some(verify) = verify {
+        validate_verify_command(verify)?;
+    }
     set_opt(&mut data, "verify", verify);
     insert_null(&mut data, "evidence");
     set_opt(&mut data, "notes", notes);
@@ -134,6 +168,7 @@ pub fn update_story(project_root: &Path, input: StoryUpdate) -> Result<EntityFil
         changed = true;
     }
     if let Some(verify) = &input.verify {
+        validate_verify_command(verify)?;
         insert_str(&mut data, "verify", verify);
         changed = true;
     }
@@ -228,6 +263,9 @@ pub fn add_decision(
         insert_str(&mut data, "title", title);
         insert_str(&mut data, "status", status);
         insert_str(&mut data, "doc", &relative);
+        if let Some(verify) = verify {
+            validate_verify_command(verify)?;
+        }
         set_opt(&mut data, "verify", verify);
         set_opt(&mut data, "notes", notes);
         insert_str(&mut data, "created_at", created);
@@ -249,6 +287,9 @@ pub fn add_decision(
     insert_str(&mut data, "title", title);
     insert_str(&mut data, "status", status);
     insert_str(&mut data, "doc", &relative);
+    if let Some(verify) = verify {
+        validate_verify_command(verify)?;
+    }
     set_opt(&mut data, "verify", verify);
     set_opt(&mut data, "notes", notes);
     insert_str(&mut data, "created_at", now_iso());
@@ -292,6 +333,7 @@ pub fn update_decision(
         changed = true;
     }
     if let Some(verify) = verify {
+        validate_verify_command(verify)?;
         insert_str(&mut data, "verify", verify);
         changed = true;
     }
@@ -720,4 +762,19 @@ pub fn fm_json(data: &Frontmatter) -> serde_json::Value {
         );
     }
     serde_json::Value::Object(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_verify_command;
+
+    #[test]
+    fn verify_commands_are_single_line_and_bounded() {
+        assert!(validate_verify_command("cargo test --all-targets").is_ok());
+        assert!(validate_verify_command("").is_err());
+        assert!(validate_verify_command("echo first\necho second").is_err());
+        assert!(validate_verify_command("echo\r\nnext").is_err());
+        assert!(validate_verify_command("echo\0secret").is_err());
+        assert!(validate_verify_command(&"x".repeat(8 * 1024 + 1)).is_err());
+    }
 }
