@@ -61,9 +61,9 @@ They auto-migrate an existing DB; if the DB is missing, run `harness init` first
 
 | Command | Behavior |
 | --- | --- |
-| `harness story verify <id>` | Run story `verify_command`; record pass/fail |
-| `harness story verify-all` | Verify all stories with a command |
-| `harness decision verify <id>` | Run decision verify command |
+| `harness story verify <id> --allow-project-command` | Run one project-authored story `verify_command` after explicit operator approval; record pass/fail |
+| `harness story verify-all --allow-project-command` | Preflight and run all configured story commands after explicit approval |
+| `harness decision verify <id> --allow-project-command` | Run one project-authored decision verify command after explicit approval |
 | `harness trace` | Record execution trace (`--summary`, `--outcome`, …); scores by default |
 | `harness score-trace [--id]` | Score latest or specific trace tiers |
 | `harness query traces` | List recent traces |
@@ -110,7 +110,7 @@ hand-edit operational markdown.
 | `harness next [--limit <n>] [--json]` | Recommend next work item; open reports after in-progress, then blocked, then planned (any role) |
 | `harness context <id> [--depth 0\|1] [--max-chars N] [--json]` | Budgeted entity context pack |
 | `harness tool register [--name] [--command] ...` | Register external project tool |
-| `harness tool check [--name] [--json]` | Scan registered tools |
+| `harness tool check [--name] [--allow-project-command] [--json]` | Scan registered tools; command-backed probes require explicit project-command approval |
 | `harness tool remove [--name] [--json]` | Remove a registered tool |
 
 ### E13 — Agent Loop Tier 2
@@ -131,7 +131,7 @@ hand-edit operational markdown.
 | Command | Behavior |
 | --- | --- |
 | `harness project id [--ensure] [--json]` | Print the cwd/`--dir` project's durable random id. `--ensure` creates the managed `AGENTS.md` marker if missing; `--json` returns id, path, and name. Init/link/upgrade ensure identity automatically. |
-| `harness mcp` | Start an authenticated streamable HTTP MCP server. Discovery is public; every `tools/call` requires `Authorization: Bearer <startup-token>` and `X-Harness-Project: <id>` (or `?project=<id>`). The token is supplied with `--token`/`HARNESS_MCP_TOKEN` or generated per process. Project Link peer/report tools are added dynamically when peers exist. Non-loopback requires `--public-url https://...`. |
+| `harness mcp` | Start an authenticated streamable HTTP MCP server. Discovery is public; every `tools/call` requires `Authorization: Bearer <startup-token>` and `X-Harness-Project: <id>` (or `?project=<id>`). The token is supplied with `--token`/`HARNESS_MCP_TOKEN` or generated per process (24-hour default TTL). Requests and serialized responses are bounded to 1 MiB bodies/responses, 16 KiB individual headers (64 headers / 64 KiB total), 64 KiB strings, 32 nesting levels, and 1,000 collection entries; non-loopback binds are rate-limited to 120 requests/minute per source by default. Project Link peer/report tools are added dynamically when peers exist. Non-loopback requires `--public-url https://...`. |
 | `harness export changelog [--since <tag\|date>] [--json]` | Derive changelog notes from implemented stories/decisions (assist only) |
 | `harness watch` | Watch entity directories and auto-reindex on markdown changes (debounced 500ms) |
 | `harness handoff [--story <id>] [--json]` | Emit concise session summary: recent traces, worklog, status, next steps |

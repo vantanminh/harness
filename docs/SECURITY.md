@@ -12,7 +12,7 @@ and CI. Implementation references point into `src/` where useful.
 | --- | --- | --- |
 | Durable markdown (stories, decisions, …) | Project Git authors | Repo contents |
 | `harness` CLI mutations | Local operator / agent with shell | Local filesystem |
-| `verify` frontmatter commands | Project-authored shell | Local cwd = project |
+| `verify` frontmatter commands | Project-authored shell, explicit operator opt-in | Local cwd = project |
 | Machine registry (`~/.5harness`) | Local user | Paths on this machine |
 | Project Link peer reads | Explicit peer markers + local registry | Configured same-machine projects only |
 | Project Link reports | Project Git authors + configured reporter peer | Target project's durable markdown |
@@ -42,17 +42,23 @@ is an adoption signal and cannot be resolved by changing launcher code.
 
 ---
 
-## Verify commands (`harness story verify` / `decision verify`)
+## Project-authored commands (`verify` and `tool check`)
 
 Stories and decisions may set a `verify` frontmatter field: a **single-line shell
-command** that the CLI runs with the project directory as `cwd`.
+command** that the CLI runs with the project directory as `cwd`. The inbound
+tool registry also stores project-authored commands for `tool check`. Because
+both are project-authored code execution, every execution requires the explicit
+`--allow-project-command` flag. `verify-all` preflights all configured commands
+and refuses before running any of them when the flag is absent. MCP does not
+expose a verify or tool-check execution tool and never supplies this approval
+implicitly.
 
 | Aspect | Detail |
 | --- | --- |
 | Source of the command | Local Git-backed markdown (project authors / collaborators) |
-| Who triggers execution | Operator running `harness story verify …` (or verify-all) |
+| Who triggers execution | Operator running `harness story verify … --allow-project-command`, `verify-all`, or `tool check --allow-project-command` |
 | Shell | Yes — so common proof scripts work (`npm test`, `node -e "…"`, `&&`) |
-| Hardening | Non-empty, max length, no null bytes / newlines; cwd must be a real directory; timeout + maxBuffer |
+| Hardening | Non-empty, single-line, max 8 KiB, no NUL bytes; verification output is capped at 64 KiB while captured, redacted, then capped before persistence; verify commands time out after 60 seconds |
 
 This is the same trust class as:
 
@@ -63,7 +69,11 @@ This is the same trust class as:
 attacker can change committed story files, they can already change app source
 and CI scripts.
 
-Implementation: `src/infrastructure/verify.ts`.
+Implementation: `src/cli.rs` (approval gate, timeout, bounded capture, and
+output redaction) and `src/app/durable.rs` (command field validation). For
+stronger isolation, run the command in an external
+sandbox/container with network and host credentials disabled; the CLI does not
+claim to be a sandbox today.
 
 ---
 
@@ -79,9 +89,14 @@ Implementation: `src/infrastructure/verify.ts`.
 | Project grant | `X-Harness-Project` or `?project=` must match the bound project's durable id |
 | Project routing | Missing or conflicting selectors fail closed |
 | Mutation surface | Reads and controlled durable mutations; agents still follow AGENTS hard-fail rules |
+| Request limits | 1 MiB body, 16 KiB individual headers, 64 headers / 64 KiB total header bytes, 64 KiB strings, 32 nesting levels, 1,000 collection entries |
+| Public rate limit | Non-loopback binds allow 120 requests/minute per source by default; configure `HARNESS_MCP_RATE_LIMIT_PER_MINUTE`; excess requests return `429` |
+| Token lifetime | 24 hours by default; override with positive `HARNESS_MCP_TOKEN_TTL_SECS`; restart rotates generated tokens |
+| Comparison | Bearer tokens use a length-independent byte comparison |
+| Response limits | Serialized responses are capped at 1 MiB; oversized JSON-RPC responses become a bounded error |
+| Response hardening | `Cache-Control: no-store`, CSP, `nosniff`, `Referrer-Policy`, and `X-Frame-Options: DENY` |
 | Call log | `.5harness/local/mcp-calls.jsonl` under the project (machine-local) |
-| Notification POSTs | `202 Accepted` with no body (Streamable HTTP; required by Codex CLI / rmcp) |
-| JSON-RPC request POSTs | `200` + `application/json` response body |
+| JSON-RPC POSTs | `200` + `application/json` response body; malformed or over-limit requests fail before tool execution |
 | Human approval | Shared `/login` session only; `/authorize` never collects credentials |
 
 The bearer token is never accepted in a query string. Dashboard cookies never
@@ -101,8 +116,12 @@ credentials. Operators can inspect a repo's id with `harness project id` or its
 
 Set a dashboard password with
 `harness dashboard set-password --password '<12+ character password>'`. The
-dashboard accepts that password through its local `X-Harness-Password` header
-or a bearer header; health and discovery remain readable.
+password is stored as a salted Argon2id PHC record under
+`$HARNESS_HOME/dashboard-password.argon2` with owner-only permissions on Unix.
+The dashboard accepts that password through its local `X-Harness-Password`
+header or a bearer header; health and discovery remain readable. A
+non-loopback dashboard refuses to start unless a modern Argon2id password is
+configured and a valid `https://` public URL is supplied.
 
 Plain HTTP is supported only for loopback native-client interoperability. A
 non-loopback bind hard-fails unless `--public-url https://...` is supplied; that
@@ -183,16 +202,16 @@ Implementation: `src/domain/paths.rs`, `src/infra/registry.rs`.
 
 | Concern | Practice |
 | --- | --- |
-| Logging | `redactSecrets` strips common token shapes (`npm_…`, `ghp_…`, `sk-…`, key=value) before file/console debug paths |
-| Env | Prefer short-lived CI OIDC over long-lived `NPM_TOKEN` for publish |
+| Logging | `redact_sensitive` strips common token shapes (`npm_…`, `ghp_…`, `sk-…`, bearer and key=value forms) before CLI/MCP diagnostics |
+| Env | Prefer short-lived CI OIDC over long-lived publish tokens; never echo `Authorization`, `NPM_TOKEN`, `GITHUB_TOKEN`, or passwords |
 | Commits | Never commit `.npmrc` with auth tokens, private keys, or production secrets |
 | Agent traces | Treat worklogs/traces as potentially sensitive; they are machine-local by default |
 
 Debug logging: `HARNESS_DEBUG`, optional `HARNESS_LOG_FILE`. Assume debug logs
-may still contain paths and command text — redaction is best-effort, not a
+may still contain paths and command text — redaction is defense in depth, not a
 guarantee against all secret formats.
 
-Implementation: `src/infrastructure/logger.ts`.
+Implementation: `src/error.rs`, `src/main.rs`, and `src/app/mcp.rs`.
 
 ---
 
@@ -202,9 +221,10 @@ Implementation: `src/infrastructure/logger.ts`.
 | --- | --- |
 | Runtime deps | Keep **minimal** (prefer zero or few production dependencies) |
 | Dev deps | Test/build only; not required for end users of the global CLI |
-| Updates | Dependabot (`.github/dependabot.yml`) for npm and GitHub Actions |
-| Audit | Maintainers run `npm audit` before releases; CI should stay green on `release:check` |
-| Pins | Lockfile (`package-lock.json`) is authoritative for CI installs (`npm ci`) |
+| Updates | Dependabot (`.github/dependabot.yml`) for npm, Cargo, and GitHub Actions |
+| Audit | CI runs `cargo audit` and `cargo deny check`; `npm audit` remains a maintainer gate |
+| Static analysis | Pinned CodeQL workflow scans JavaScript/TypeScript and Rust on pushes, pull requests, and weekly schedule |
+| Pins | `Cargo.lock`, `package-lock.json`, pinned Rust toolchain, and full-SHA Actions refs are authoritative |
 
 New production dependencies require a clear need (size, maintenance, license).
 Prefer Node built-ins for filesystem, HTTP, and crypto.
@@ -239,8 +259,11 @@ Production releases (US-036 / decision 0018):
 2. **Publish** prefers **npm trusted publishing (OIDC)** with
    `npm publish --provenance` (green provenance on the package page when
    configured).
-3. **GitHub Release** notes come from CHANGELOG; optional **SPDX SBOM** asset.
-4. Long-lived **`NPM_TOKEN`** is optional fallback only.
+3. **GitHub Release** includes an exact `SHA256SUMS` manifest, optional detached
+   `SHA256SUMS.sig`, SPDX SBOM, and GitHub artifact attestations for binaries +
+   the manifest.
+4. Long-lived **`NPM_TOKEN`** is not used by the release workflows; configure
+   npm Trusted Publishing for the repository/workflow instead.
 
 ### Consumer guidance
 
@@ -249,6 +272,10 @@ Production releases (US-036 / decision 0018):
 npm i -g 5harness@<version>
 
 # Prefer inspecting provenance on the npm package page for that version.
+# For a standalone release asset, download SHA256SUMS and verify the matching
+# binary before executing it. If SHA256SUMS.sig is present, verify that
+# signature with the maintainer's published key; GitHub attestations can be
+# checked with `gh attestation verify`.
 # After install, optional:
 npm audit signatures
 ```
@@ -257,7 +284,8 @@ npm audit signatures
   successor name after any rename story).
 - Prefer versions that show **provenance** attestations built from
   `github.com/vantanminh/5harness`.
-- GitHub Release assets may include `sbom.spdx.json` for the release tag.
+- GitHub Release assets include `SHA256SUMS` and may include
+  `SHA256SUMS.sig` and `sbom.spdx.json` for the release tag.
 
 Full release procedure: [docs/product/distribution.md](product/distribution.md).
 

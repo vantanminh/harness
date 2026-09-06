@@ -44,8 +44,9 @@ work, and detailed for high-risk work.
 ## Verification Gate
 
 An advisory Harness check that runs or inspects mechanical proof before a task
-is closed. In Phase 4, `story verify <id>` executes a story's `verify_command`,
-`story verify-all` runs all configured story proof commands, and
+is closed. In Phase 4, `story verify <id> --allow-project-command` executes a
+story's `verify` command after explicit operator approval, `story verify-all
+--allow-project-command` runs all configured story proof commands, and
 `trace --story <id>` warns when that story's verification has not passed.
 
 ## Tool Registry

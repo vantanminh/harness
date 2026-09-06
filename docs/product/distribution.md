@@ -8,9 +8,9 @@
 | bin | `harness` / `5harness` / `5hn` → `dist/cli.js` (fixed-path shim → native Rust binary) |
 | GitHub | [vantanminh/5harness](https://github.com/vantanminh/5harness) |
 | **Preferred install** | `npm i -g 5harness` |
-| Windows auto-install | `irm https://raw.githubusercontent.com/vantanminh/5harness/main/install/windows.ps1 \| iex` |
-| macOS auto-install | `curl -fsSL https://raw.githubusercontent.com/vantanminh/5harness/main/install/macos.sh \| bash` |
-| Linux auto-install | `curl -fsSL https://raw.githubusercontent.com/vantanminh/5harness/main/install/linux.sh \| bash` |
+| Windows auto-install | Download `install/windows.ps1` from a versioned `vX.Y.Z` tag, inspect it, then run it |
+| macOS auto-install | Download `install/macos.sh` from a versioned `vX.Y.Z` tag, inspect it, then run it |
+| Linux auto-install | Download `install/linux.sh` from a versioned `vX.Y.Z` tag, inspect it, then run it |
 | Alternate install | `npm i -D 5harness` + `npx harness …` |
 | Node | `>=22.5.0` (packaging/publish glue; CLI runtime is native) |
 | License | MIT |
@@ -41,19 +41,23 @@ and publish each of these six target assets.
 
 ```bash
 # Linux or macOS
-curl -fsSL https://raw.githubusercontent.com/vantanminh/5harness/main/install/linux.sh | bash
-curl -fsSL https://raw.githubusercontent.com/vantanminh/5harness/main/install/macos.sh | bash
+VERSION=0.26.2
+curl --proto '=https' --tlsv1.2 -fsSL "https://raw.githubusercontent.com/vantanminh/5harness/v${VERSION}/install/linux.sh" -o install-5harness.sh
+less install-5harness.sh
+bash install-5harness.sh
 
 # Pin a release or install an offline/local artifact
-export HARNESS_INSTALL_VERSION=0.25.3
-curl -fsSL https://raw.githubusercontent.com/vantanminh/5harness/main/install/linux.sh | bash
+export HARNESS_INSTALL_VERSION="$VERSION"
 HARNESS_INSTALL_FROM=/path/to/artifacts ./install/linux.sh
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/vantanminh/5harness/main/install/windows.ps1 | iex
-$env:HARNESS_INSTALL_VERSION = "0.25.3"
+$version = "0.26.2"
+Invoke-WebRequest "https://raw.githubusercontent.com/vantanminh/5harness/v$version/install/windows.ps1" -OutFile install-5harness.ps1
+Get-Content .\install-5harness.ps1
+powershell -ExecutionPolicy Bypass -File .\install-5harness.ps1
+$env:HARNESS_INSTALL_VERSION = $version
 $env:HARNESS_INSTALL_FROM = "D:\path\to\harness-x86_64-pc-windows-msvc.exe"
 powershell -File install/windows.ps1
 ```
@@ -98,7 +102,7 @@ functionality.
 ### Default (automatic)
 
 1. Merge / push to `main` (do **not** hand-bump the version).
-2. CI runs `release:check` on **ubuntu / windows / macos × Node 22.x + 24.x**
+2. CI runs `release:check` on **ubuntu / windows / macos × Node 22.19.0 + 24.19.0**
    and runs native installer smoke tests on all three OSes.
 3. On success, **Auto-release** (ubuntu + Node 24 only):
    - Detects bump kind from commits since last `v*` tag
@@ -116,12 +120,14 @@ functionality.
    - Runs `npm run bump` when needed; keeps version files + CHANGELOG promote
      (US-038) in sync.
    - Commits `chore(release): X.Y.Z` when files change, tags `vX.Y.Z`.
+   - Resolves and tags the release commit **before** native builds; every
+     binary, npm tarball, and GitHub asset is produced from that same immutable
+     ref (build once, publish everywhere).
    - **npm publish** via **OIDC trusted publishing** with **`--provenance`**
      (green provenance check on npm when configured).
-   - Creates a **GitHub Release** with notes from `CHANGELOG.md` plus optional
-     export-changelog assist (`scripts/release-notes.mjs --with-export`), all
-     six native target binaries, and an **SPDX SBOM** (`sbom.spdx.json` from
-     `npm sbom`).
+   - Creates a **GitHub Release** with notes from `CHANGELOG.md`, all six
+     native target binaries, `SHA256SUMS`, GitHub artifact attestations, an
+     optional `SHA256SUMS.sig`, and an **SPDX SBOM** (`sbom.spdx.json`).
 
 ### Pushing from a local clone (avoid non-fast-forward)
 
@@ -148,7 +154,7 @@ succeeds.
 | Method | Role |
 | --- | --- |
 | **npm Trusted Publisher (OIDC)** | **Preferred** for CI publishes — short-lived tokens, automatic provenance |
-| **`NPM_TOKEN` secret** | **Optional fallback** only (transition / emergency); not required when OIDC is configured |
+| **`NPM_TOKEN` secret** | Not read by release workflows; configure npm Trusted Publishing |
 
 **One-time setup on [npmjs.com](https://www.npmjs.com)** for package
 **`5harness`** → Settings → **Trusted Publisher** (required for green
@@ -167,11 +173,10 @@ from a laptop for production releases. CI uses `npm publish --provenance`.
 
 Notes:
 
-- npm allows **one** trusted publisher workflow filename per package. Prefer
-  `ci.yml` for day-to-day auto-release; switch to `release.yml` only if you
-  primarily publish via the Release workflow, or keep optional `NPM_TOKEN` for
-  the non-primary path.
-- Requires **npm CLI ≥ 11.5.1** on the runner (workflows install `npm@latest`)
+- Configure the trusted publisher for the workflow you use (`ci.yml` for
+  automatic releases or `release.yml` for tag/workflow-dispatch releases).
+- Requires **npm CLI ≥ 11.5.1** on the runner (workflows install pinned
+  `npm@11.17.0`)
   and job permission **`id-token: write`**.
 - After OIDC works, consider restricting token-based publish on npm
   (Settings → Publishing access) and revoking long-lived automation tokens.
@@ -227,14 +232,16 @@ node scripts/release-notes.mjs 1.2.3 --with-export -o release-notes.md
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push/PR → `main` | `release:check` + npm tarball smoke on **ubuntu + windows + macos × Node 22.x + 24.x**, native installer smoke on all three OSes, and six-target native artifact build; on push to `main`, auto-bump + tag + **OIDC npm publish --provenance** + **GitHub Release** + SBOM (US-036) |
-| [`.github/workflows/release.yml`](../../.github/workflows/release.yml) | tag `v*` **or** workflow_dispatch | Builds six native targets, then manual bump+publish, or publish when a human/PAT pushes a version tag — same OIDC/provenance/Release/SBOM path |
+| [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) | push/PR → `main` | `release:check` + npm tarball smoke on **ubuntu + windows + macos × Node 22.19.0 + 24.19.0**, native installer smoke on all three OSes, and six-target native artifact build; release prep tags the commit before build, then publishes the same artifacts with **OIDC npm provenance**, checksums, attestations, Release, and SBOM |
+| [`.github/workflows/codeql.yml`](../../.github/workflows/codeql.yml) | push/PR + weekly | Pinned CodeQL scans JavaScript/TypeScript and Rust with `security-events: write` limited to the analysis job |
+| [`.github/workflows/release.yml`](../../.github/workflows/release.yml) | tag `v*` **or** workflow_dispatch | Resolves/creates the version tag first, builds six targets once, then publishes the same binaries to npm and GitHub Release with checksums, attestations, and SBOM |
 
 Actions are pinned to Node-24-ready major versions (`actions/checkout@v6`,
 `actions/setup-node@v6`) and set `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` per
 GitHub’s Node 20 → Node 24 Actions migration.
 
-Publish jobs set `permissions: contents: write` and `id-token: write`.
+Build jobs default to read-only permissions. Only release preparation/publish
+jobs receive `contents: write`, `id-token: write`, and `attestations: write`.
 
 ## Consumer: verifying provenance
 
@@ -247,7 +254,8 @@ npm audit signatures
 ```
 
 GitHub Releases for each `vX.Y.Z` include release notes, all six native target
-assets, and `sbom.spdx.json`.
+assets, `SHA256SUMS`, GitHub attestations, and `sbom.spdx.json` (plus
+`SHA256SUMS.sig` when the maintainer signing key is configured).
 
 ## Native engine packaging
 

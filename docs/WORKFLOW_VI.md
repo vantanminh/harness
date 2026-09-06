@@ -223,8 +223,8 @@ harness story update --id US-001 --status implemented \
   --unit 1 --integration 1 --e2e 0 --platform 0
 
 # Verify story
-harness story verify --id US-001
-harness story verify-all
+harness story verify --id US-001 --allow-project-command
+harness story verify-all --allow-project-command
 ```
 
 ---
@@ -328,8 +328,8 @@ Agent **không** dump toàn bộ markdown tree. Dùng công cụ đọc có mụ
 ### Verify — Chạy proof
 
 ```bash
-harness story verify --id US-001     # Chạy verify command trong story
-harness story verify-all             # Tất cả story có verify
+harness story verify --id US-001 --allow-project-command     # Chạy verify command trong story
+harness story verify-all --allow-project-command             # Tất cả story có verify
 ```
 
 ### Audit — Kiểm tra drift
@@ -484,14 +484,14 @@ harness intake --type <type> --summary "<text>" --lane <lane>
 ```bash
 harness story add --id US-XXX --title "..." --lane <lane>
 harness story update --id US-XXX --status implemented --unit 1 ...
-harness story verify --id US-XXX
-harness story verify-all
+harness story verify --id US-XXX --allow-project-command
+harness story verify-all --allow-project-command
 ```
 
 ### Decision
 ```bash
 harness decision add --id NNNN --title "..." --doc docs/decisions/...
-harness decision verify --id NNNN
+harness decision verify --id NNNN --allow-project-command
 ```
 
 ### Backlog
@@ -544,4 +544,3 @@ Task được coi là **done** khi:
 
 > **Tham khảo:** `docs/HARNESS.md`, `docs/FEATURE_INTAKE.md`,
 > `docs/ARCHITECTURE.md`, `docs/CONTEXT_RULES.md`, `docs/GLOSSARY.md`
-

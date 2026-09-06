@@ -59,17 +59,27 @@ before public disclosure when the issue is not already widely known.
 
 ## Supply chain
 
-- Releases prefer **npm trusted publishing (OIDC)** with **provenance**
-  attestations — see [docs/product/distribution.md](docs/product/distribution.md)
-  and [docs/SECURITY.md](docs/SECURITY.md#release-provenance).
-- GitHub Releases may include an **SPDX SBOM** asset (`sbom.spdx.json`).
-- Dependency updates: Dependabot (npm + GitHub Actions) where configured under
-  `.github/dependabot.yml`.
+- Releases use **npm trusted publishing (OIDC)** with **provenance** and build
+  native binaries once from an immutable tag — see
+  [docs/product/distribution.md](docs/product/distribution.md) and
+  [docs/SECURITY.md](docs/SECURITY.md#release-provenance).
+- GitHub Releases include `SHA256SUMS`, GitHub artifact attestations, and an
+  **SPDX SBOM** asset (`sbom.spdx.json`); `SHA256SUMS.sig` is added when the
+  maintainer signing key is configured.
+- Dependency updates and gates cover npm, Cargo, and GitHub Actions:
+  Dependabot, `cargo audit`, and `cargo deny check` are configured under
+  `.github/` and `deny.toml`.
+- Pinned CodeQL analysis covers the JavaScript/TypeScript and Rust surfaces on
+  pushes, pull requests, and a weekly scheduled run.
 
 ## Safe use (summary)
 
 - Run `harness` as a normal developer user; treat **verify** scripts as
-  project-trusted shell (like CI `run:` steps).
+  project-trusted shell (like CI `run:` steps). Execution requires the
+  explicit `--allow-project-command` flag and is never implicitly enabled by
+  MCP.
+- Treat command-backed `harness tool check` probes the same way: review the
+  project-authored command and pass `--allow-project-command` explicitly.
 - Keep **dashboard** and **MCP** bound to **localhost** unless you understand
   the exposure of local project data.
 - Project Link resolves only explicitly configured peers through the
@@ -86,6 +96,7 @@ before public disclosure when the issue is not already widely known.
   secrets, or unnecessary personal data in `docs/reports/` files.
 - MCP exposes peer/report tools dynamically after binding the calling project.
   A peer id cannot replace the `X-Harness-Project` selector.
-- Do not commit tokens; CI should prefer OIDC over long-lived `NPM_TOKEN`.
+- Do not commit tokens; release workflows do not read `NPM_TOKEN` and require
+  npm Trusted Publishing/OIDC for publication.
 
 Thank you for helping keep harness and its users safe.

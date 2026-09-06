@@ -33,24 +33,35 @@ Automatic native install (no compile from source):
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/vantanminh/5harness/main/install/windows.ps1 | iex
+$version = "0.26.2"
+Invoke-WebRequest "https://raw.githubusercontent.com/vantanminh/5harness/v$version/install/windows.ps1" -OutFile install-5harness.ps1
+Get-Content .\install-5harness.ps1
+powershell -ExecutionPolicy Bypass -File .\install-5harness.ps1
 ```
 
 **macOS:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vantanminh/5harness/main/install/macos.sh | bash
+VERSION=0.26.2
+curl --proto '=https' --tlsv1.2 -fsSL "https://raw.githubusercontent.com/vantanminh/5harness/v${VERSION}/install/macos.sh" -o install-5harness.sh
+less install-5harness.sh
+bash install-5harness.sh
 ```
 
 **Linux:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vantanminh/5harness/main/install/linux.sh | bash
+VERSION=0.26.2
+curl --proto '=https' --tlsv1.2 -fsSL "https://raw.githubusercontent.com/vantanminh/5harness/v${VERSION}/install/linux.sh" -o install-5harness.sh
+less install-5harness.sh
+bash install-5harness.sh
 ```
 
 Point any native installer at a local build with `HARNESS_INSTALL_FROM`
-(directory or binary path). Pin a release with `HARNESS_INSTALL_VERSION=0.25.3`
-and use `HARNESS_INSTALL_SKIP_PATH=1` in automation. npm install remains the
+(directory or binary path). Pin a release with `HARNESS_INSTALL_VERSION=<version>`
+and use `HARNESS_INSTALL_SKIP_PATH=1` in automation. Release installers fetch
+the matching `SHA256SUMS` manifest and refuse to execute a binary whose
+SHA-256 does not match. npm install remains the
 preferred option and works on all three supported operating systems.
 
 Project-local (optional):
@@ -142,7 +153,11 @@ planned backend work.
 server prints a per-process bearer token when it starts (or accepts `--token` /
 `HARNESS_MCP_TOKEN`). Discovery and protocol negotiation are public; every
 `tools/call` requires both the bearer token and the calling project's
-`X-Harness-Project` id. The dashboard `/mcp` endpoint is discovery-only; use
+`X-Harness-Project` id. Requests are bounded (1 MiB body, 16 KiB individual
+headers, 64 headers / 64 KiB total header bytes, 64 KiB strings, 32 nesting
+levels, 1,000 collection entries) and generated tokens expire after 24 hours by
+default. Serialized responses are capped at 1 MiB. Non-loopback MCP binds are
+rate-limited to 120 requests/minute per source by default. The dashboard `/mcp` endpoint is discovery-only; use
 `harness mcp` for authenticated tool calls.
 
 ```bash
@@ -173,8 +188,9 @@ operational-entity mutation is restricted to sanitized reports owned by the
 configured target project; explicit peer-management commands may also attempt
 reverse configuration markers.
 
-Plain HTTP is accepted only on loopback. A non-loopback bind requires an HTTPS
-reverse proxy and its canonical URL, for example
+Plain HTTP is accepted only on loopback. A non-loopback dashboard or MCP bind
+requires an HTTPS reverse proxy and its canonical URL; dashboards also require
+a configured Argon2id password. For example:
 `harness mcp --host 0.0.0.0 --public-url https://mcp.example.com`.
 
 Product pivot: [decision 0011](docs/decisions/0011-global-tool-markdown-durable-index.md).
@@ -200,9 +216,14 @@ Full contract: [AGENTS.md](AGENTS.md) · [docs/CONTEXT_RULES.md](docs/CONTEXT_RU
 - **Report vulnerabilities** privately — [SECURITY.md](SECURITY.md)
 - **Trust model** (verify commands, MCP local-only, registry paths, secrets,
   provenance for consumers): [docs/SECURITY.md](docs/SECURITY.md)
+- **Threat model** (assets, boundaries, mitigations, residual risk):
+  [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)
 
-`harness story verify` runs the **project-authored** `verify` command from story
-markdown (intentional local proof, like CI scripts).
+`harness story verify --allow-project-command` runs the **project-authored** `verify` command from story
+markdown only with explicit `--allow-project-command` approval (intentional
+local proof, like CI scripts). Commands are bounded to one non-empty 8 KiB line,
+and verification output is redacted/truncated before it is persisted. MCP never
+enables this approval automatically.
 
 ## Changelog
 
@@ -246,9 +267,11 @@ node dist/cli.js --help
 ## CI / CD
 
 - **CI** (push/PR): `release:check` + npm tarball smoke on **ubuntu / windows /
-  macos × Node 22 + 24**, plus native installer smoke on each OS
-- **Auto-release** (push to `main`): bump, tag, **OIDC npm publish --provenance**,
-  GitHub Release + SBOM (skip with `[skip release]`)
+  macos × Node 22.19.0 + 24.19.0**, plus native installer smoke on each OS
+- **Auto-release** (push to `main`): tag the release commit first, build native
+  artifacts once, then publish the same files with **OIDC npm provenance**,
+  SHA-256 checksums, attestations, GitHub Release, and SBOM (skip with
+  `[skip release]`)
 - **Manual:** Actions → Release, or matching `v*` tag
 
 Details: [docs/product/distribution.md](docs/product/distribution.md).

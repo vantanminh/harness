@@ -308,7 +308,7 @@ Stories may carry a mechanical proof command:
 ```bash
 harness story add --id US-012 --title "Story verification" --lane normal --verify "npm test"
 harness story update --id US-012 --verify "npm test"
-harness story verify US-012
+harness story verify US-012 --allow-project-command
 ```
 
 `story verify` runs the command from the repository root, records
@@ -316,13 +316,14 @@ harness story verify US-012
 When `trace --story <id>` links to a story whose verification command has never
 passed, the trace still records but prints an advisory warning before close.
 
-Use `story verify-all` before merges, maturity claims, and benchmark runs. It
-runs every configured story verification command, prints one result per story,
-skips stories without `verify_command`, and exits 1 if any configured story
-fails.
+Use `story verify-all --allow-project-command` before merges, maturity claims,
+and benchmark runs. It preflights every configured story verification command,
+prints one result per story, skips stories without `verify`, and exits 1
+if any configured story fails. Without the explicit flag it refuses before
+executing any project-authored command.
 
-`story verify` accepts only the story id. Configure the command with
-`story add --verify` or `story update --verify`. Record proof booleans with
+`story verify` accepts the story id plus the explicit trust flag. Configure the
+command with `story add --verify` or `story update --verify`. Record proof booleans with
 `story update`, using numeric values: `1` means yes and `0` means no. The CLI
 rejects text values such as `yes` and `no`.
 
@@ -418,20 +419,26 @@ A task is done only when:
 
 ## Validation Ladder (this product)
 
-This repository's mechanical proof is npm scripts, not a generic cargo ladder:
+This repository's mechanical proof is the pinned Rust + npm release gate:
 
 ```text
-npm run typecheck
-  TypeScript --noEmit
+cargo fmt --check
+  formatting
 
-npm test
-  Vitest unit, integration, and CLI e2e suites
+cargo clippy --all-targets -- -D warnings
+  linting
+
+cargo test --all-targets
+  unit, integration, and CLI e2e suites
+
+cargo audit && cargo deny check
+  Rust advisory/license/source policy
 
 npm run pack:check
   npm pack dry-run and published-file assertions
 
 npm run release:check
-  typecheck + test + pack:check (CI matrix: Ubuntu/Windows/macOS × Node 22/24)
+  security check + fmt + clippy + test + pack:check
 ```
 
 Target projects may set their own `verify` commands on stories

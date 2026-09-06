@@ -71,12 +71,20 @@ scanning each registered tool and persisting the verdict (`status` and
 `checked_at`). Run it at intake start so status reflects current reality.
 
 ```bash
-harness tool check            # scan all registered tools
-harness tool check --name c3  # scan one
-harness tool check --json     # machine-readable for agents
+harness tool check --allow-project-command            # scan all registered tools
+harness tool check --name c3 --allow-project-command  # scan one
+harness tool check --allow-project-command --json     # machine-readable for agents
 ```
 
-Probe per kind:
+The native runtime treats each persisted `command` field as a project-authored
+shell check, regardless of the record's `kind`. It refuses to execute any such
+command unless `--allow-project-command` is present; review the command in the
+project record first. Commands are bounded to one non-empty 8 KiB line and run
+in the project directory. The older `--scan`/kind-specific probe metadata is
+not executed by this runtime and never bypasses the approval gate; use a
+trusted wrapper command when a probe is required.
+
+The intended probe metadata (for runtimes that implement it) is:
 
 | Kind | Probe | `present` means |
 | --- | --- | --- |
@@ -84,12 +92,12 @@ Probe per kind:
 | `mcp`, `skill` | `scan_target` path resolves (`~` expands) | equipped/configured on disk |
 | `http` | `scan_target` reachable over TCP (2s), else path | endpoint answers |
 
-`tool check` always exits `0`: a missing extension is a fact to report, not a
-CLI failure. A `cli`/`binary` is `present` when runnable. An `mcp`/`skill`/`http`
-`present` means **equipped** (config/file resolves), not **live this session** —
-the agent still confirms live usability at call time, since only the agent
-runtime can see whether its MCP server is actually connected. With no
-`scan_target`, the status is `unknown` and the agent must confirm.
+Without the explicit approval flag, a command-backed check exits non-zero and
+does not execute. With approval, command success is recorded as `ok` and
+failure as `failed`; a missing extension is a fact to report, not a CLI failure.
+Only an explicitly trusted command can establish presence in the native
+runtime. Metadata without a command is not an authorization or execution
+path.
 
 ## Inbound Registry: Look Up By Capability
 
@@ -159,14 +167,14 @@ without parsing the human table.
 | `intake` | Task specification | Record a feature intake classification. | `--type`, `--summary`, `--lane` |
 | `story add` | Task state | Create a durable story record. | `--id`, `--title`, `--lane`, optional `--verify` |
 | `story update` | Task state | Update story status, proof flags, evidence, or verification command. | `--id`, optional proof/status fields |
-| `story verify` | Verification | Run one story `verify_command` and record pass/fail. | story id |
-| `story verify-all` | Verification | Run all configured story verification commands and skip stories without one. | none |
+| `story verify` | Verification | Run one project-authored story `verify` command after explicit `--allow-project-command` approval and record pass/fail. | story id + approval flag |
+| `story verify-all` | Verification | Preflight and run all configured story verification commands after explicit `--allow-project-command` approval. | approval flag |
 | `decision add` | Project memory | Create a durable decision record. | `--id`, `--title`, optional `--doc`, `--verify` |
-| `decision verify` | Verification | Run one decision verification command. | decision id |
+| `decision verify` | Verification | Run one project-authored decision verification command after explicit `--allow-project-command` approval. | decision id + approval flag |
 | `backlog add` | Entropy auditing | Record a harness improvement proposal. | `--title`, optional pain/suggestion/risk/predicted fields |
 | `backlog close` | Entropy auditing | Close a backlog item with outcome evidence. | `--id`, optional `--status`, `--outcome` |
 | `tool register` | Tool access | Register an external project tool. | `--name`, `--command`, `--description`, `--responsibility`, optional `--kind`, `--capability`, `--scan`, `--args`, `--force` |
-| `tool check` | Tool access | Scan registered tools and persist present/missing/unknown status. | optional `--name`, `--json` |
+| `tool check` | Tool access | Scan registered tools and persist present/missing/unknown status; command-backed checks require explicit project-command approval. | optional `--name`, `--allow-project-command`, `--json` |
 | `tool remove` | Tool access | Remove a registered external tool. | `--name` |
 | `trace` | Observability | Record an agent execution trace and print trace quality. | `--summary`, optional trace fields |
 | `score-trace` | Observability | Score trace detail against lane requirements. | optional `--id` |
