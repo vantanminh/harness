@@ -40,6 +40,11 @@ on:
           - patch
           - minor
           - major
+      existing_tag:
+        description: "Existing vX.Y.Z tag to validate and republish without changing main (recovery)"
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}
@@ -71,7 +76,9 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
+          # A recovery dispatch checks out the immutable existing tag while
+          # keeping this workflow definition from the current main branch.
+          ref: ${{ inputs.existing_tag || github.ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Rust
@@ -109,25 +116,38 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_TAG: ${{ github.ref_name }}
           BUMP_KIND: ${{ inputs.bump }}
+          EXISTING_TAG: ${{ inputs.existing_tag }}
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            VERSION="$(node scripts/bump-version.mjs "$BUMP_KIND" | tail -n1)"
-            TAG="v${VERSION}"
-            npm run release:check
-            SIGN_FLAG=""
-            if [ -n "${GPG_PRIVATE_KEY:-}" ]; then
-              echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-              KEY_ID="$(gpg --list-secret-keys --keyid-format LONG | grep '^sec' | head -1 | sed 's/.*\/\([^ ]*\).*/\1/')"
-              git config user.signingkey "$KEY_ID"
-              git config commit.gpgsign true
-              git config tag.gpgSign true
-              SIGN_FLAG="--sign"
+            if [ -n "${EXISTING_TAG:-}" ]; then
+              if ! [[ "$EXISTING_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "existing_tag must match vX.Y.Z"
+                exit 1
+              fi
+              TAG="$EXISTING_TAG"
+              VERSION="${TAG#v}"
+              test "$(git rev-list -n1 "$TAG")" = "$(git rev-parse HEAD)"
+              test "$(node -p "require('./package.json').version")" = "$VERSION"
+              echo "Reusing immutable existing tag $TAG (no version bump or push)."
+            else
+              VERSION="$(node scripts/bump-version.mjs "$BUMP_KIND" | tail -n1)"
+              TAG="v${VERSION}"
+              npm run release:check
+              SIGN_FLAG=""
+              if [ -n "${GPG_PRIVATE_KEY:-}" ]; then
+                echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+                KEY_ID="$(gpg --list-secret-keys --keyid-format LONG | grep '^sec' | head -1 | sed 's/.*\/\([^ ]*\).*/\1/')"
+                git config user.signingkey "$KEY_ID"
+                git config commit.gpgsign true
+                git config tag.gpgSign true
+                SIGN_FLAG="--sign"
+              fi
+              node scripts/git-push-release.mjs $SIGN_FLAG \
+                --tag "$TAG" \
+                --message "chore(release): ${VERSION}"
             fi
-            node scripts/git-push-release.mjs $SIGN_FLAG \
-              --tag "$TAG" \
-              --message "chore(release): ${VERSION}"
           else
             VERSION="$(node -p "require('./package.json').version")"
             TAG="$EVENT_TAG"
@@ -212,6 +232,12 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.ref }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-07-16
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
 
       - name: Setup Node.js 24
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
