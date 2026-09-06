@@ -171,6 +171,7 @@ jobs:
         run: npm ci
 
       - name: Sync to latest main before planning release
+        if: inputs.existing_tag == ''
         run: |
           set -euo pipefail
           git fetch origin main
