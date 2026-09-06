@@ -57,6 +57,16 @@ fn all_native_install_scripts_exist_and_support_local_artifacts() {
             text.contains("SHA256SUMS") && text.contains("HARNESS_INSTALL_EXPECTED_SHA256"),
             "{name} must verify a release checksum before execution"
         );
+        let symlink_guard = if name == "windows.ps1" {
+            "Assert-NoReparsePointPath"
+        } else {
+            "assert_no_symlink_components"
+        };
+        assert!(
+            text.contains(symlink_guard),
+            "{name} must reject symlinked install paths"
+        );
+        assert!(!text.contains(",,}"), "{name} must run on stock macOS bash");
     }
     let linux = fs::read_to_string(root().join("install/linux.sh")).unwrap();
     assert!(linux.contains("x86_64-unknown-linux-gnu"));
@@ -262,8 +272,45 @@ fn linux_installer_refuses_symlinked_destination() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("symlinked installed binary"), "{stderr}");
+    assert!(stderr.contains("symlinked"), "{stderr}");
     assert_eq!(fs::read_to_string(outside).unwrap(), "untouched");
+    let _ = fs::remove_dir_all(source_dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn linux_installer_refuses_symlinked_binary_directory() {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let root = root();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let source_dir = std::env::temp_dir().join(format!("harness-installer-bin-dir-{nonce}"));
+    let prefix = source_dir.join("prefix");
+    let outside = source_dir.join("outside");
+    fs::create_dir_all(&prefix).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    symlink(&outside, prefix.join("bin")).unwrap();
+    let binary = source_dir.join("harness");
+    fs::write(&binary, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+    let digest = hex::encode(Sha256::digest(fs::read(&binary).unwrap()));
+
+    let output = Command::new("bash")
+        .arg(root.join("install/linux.sh"))
+        .env("HARNESS_INSTALL_FROM", &source_dir)
+        .env("HARNESS_INSTALL_PREFIX", &prefix)
+        .env("HARNESS_INSTALL_SKIP_PATH", "1")
+        .env("HARNESS_INSTALL_EXPECTED_SHA256", digest)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("symlinked"), "{stderr}");
+    assert!(!outside.join("harness").exists());
     let _ = fs::remove_dir_all(source_dir);
 }
 

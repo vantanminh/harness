@@ -37,6 +37,29 @@ function Get-Target {
   }
 }
 
+function Assert-NoReparsePointPath([string]$Path) {
+  try {
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $rootPath = [System.IO.Path]::GetPathRoot($full)
+    if (-not $rootPath) { Fail "could not resolve path root: $Path" }
+    $current = $rootPath
+    $remaining = $full.Substring($rootPath.Length)
+    foreach ($part in ($remaining -split '[\\/]' | Where-Object { $_ })) {
+      $current = Join-Path $current $part
+      if (Test-Path -LiteralPath $current) {
+        $item = Get-Item -LiteralPath $current -Force
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+          Fail "refusing to traverse a reparse-point path: $current"
+        }
+      }
+    }
+  } catch [System.Management.Automation.RuntimeException] {
+    throw
+  } catch {
+    Fail "could not inspect path $Path`: $($_.Exception.Message)"
+  }
+}
+
 $script:TemporaryRoots = New-Object System.Collections.Generic.List[string]
 
 function Get-ExpectedChecksum([string]$Source) {
@@ -53,6 +76,7 @@ function Get-ExpectedChecksum([string]$Source) {
     }
   }
   if (-not $manifest -or -not (Test-Path -LiteralPath $manifest -PathType Leaf)) { return $null }
+  Assert-NoReparsePointPath $manifest
   $name = if ($env:HARNESS_INSTALL_CHECKSUM_NAME -and $env:HARNESS_INSTALL_CHECKSUM_NAME.Trim()) {
     $env:HARNESS_INSTALL_CHECKSUM_NAME.Trim()
   } else {
@@ -86,6 +110,7 @@ function Verify-Checksum([string]$Source) {
 function Find-LocalBinary([string]$From, [string]$Target) {
   if (-not $From -or -not $From.Trim()) { return $null }
   $path = [System.IO.Path]::GetFullPath($From.Trim())
+  Assert-NoReparsePointPath $path
   if (-not (Test-Path -LiteralPath $path)) {
     Fail "HARNESS_INSTALL_FROM does not exist: $From"
   }
@@ -148,6 +173,8 @@ function Add-UserPath([string]$BinDir) {
 }
 
 function Install-Binary([string]$Source, [string]$Prefix) {
+  Assert-NoReparsePointPath $Source
+  Assert-NoReparsePointPath $Prefix
   if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
     Fail "native binary not found: $Source"
   }
@@ -157,8 +184,11 @@ function Install-Binary([string]$Source, [string]$Prefix) {
   }
   Verify-Checksum $Source
   $binDir = Join-Path $Prefix "bin"
+  Assert-NoReparsePointPath $binDir
   New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+  Assert-NoReparsePointPath $binDir
   $destination = Join-Path $binDir "harness.exe"
+  Assert-NoReparsePointPath $destination
   if (Test-Path -LiteralPath $destination) {
     $destinationItem = Get-Item -LiteralPath $destination -Force
     if ($destinationItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
@@ -166,6 +196,7 @@ function Install-Binary([string]$Source, [string]$Prefix) {
     }
   }
   Copy-Item -LiteralPath $Source -Destination $destination -Force
+  Assert-NoReparsePointPath $destination
   Verify-Checksum $destination
   Write-Host "Installed $destination"
   Add-UserPath $binDir

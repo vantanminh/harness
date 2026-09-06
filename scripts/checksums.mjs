@@ -18,6 +18,27 @@ function fail(message) {
   process.exit(1);
 }
 
+function assertNoSymlinkComponents(file, label, insideRepository = true) {
+  const resolved = path.resolve(file);
+  const relative = path.relative(root, resolved);
+  if (insideRepository && (relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))) {
+    fail(`refusing ${label} outside the repository: ${relative}`);
+  }
+  const rootPath = path.parse(resolved).root;
+  let current = rootPath;
+  const components = resolved.slice(rootPath.length).split(path.sep).filter(Boolean);
+  for (const part of components) {
+    current = path.join(current, part);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) {
+        fail(`refusing ${label} through symlink: ${path.relative(root, current)}`);
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+}
+
 const args = process.argv.slice(2);
 let output = "SHA256SUMS";
 const files = [];
@@ -37,21 +58,19 @@ for (let i = 0; i < args.length; i += 1) {
 
 const selected = files.length > 0
   ? files.map((file) => path.resolve(root, file))
-  : fs.readdirSync(path.join(root, "bin"), { withFileTypes: true })
+  : (assertNoSymlinkComponents(path.join(root, "bin"), "binary directory"),
+    fs.readdirSync(path.join(root, "bin"), { withFileTypes: true }))
     .filter((entry) => entry.isFile() && targetPattern.test(entry.name))
     .map((entry) => path.join(root, "bin", entry.name));
 
 if (selected.length === 0) fail("no release binaries supplied or staged in bin/");
 
 for (const file of selected) {
-  const relative = path.relative(root, file);
-  if (relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    fail(`refusing to read a binary outside the repository: ${relative}`);
-  }
+  assertNoSymlinkComponents(file, "binary");
 }
 
 const rows = selected.map((file) => {
-  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+  if (!fs.existsSync(file) || !fs.lstatSync(file).isFile()) {
     fail(`binary does not exist: ${path.relative(root, file)}`);
   }
   const name = path.basename(file);
@@ -67,9 +86,9 @@ const duplicates = rows.map((row) => row.name).filter((name, index, all) => all.
 if (duplicates.length > 0) fail(`duplicate binary names: ${duplicates.join(", ")}`);
 
 const destination = path.resolve(root, output);
-const relativeDestination = path.relative(root, destination);
-if (relativeDestination.startsWith(`..${path.sep}`) || path.isAbsolute(relativeDestination)) {
-  fail(`refusing to write a manifest outside the repository: ${relativeDestination}`);
+assertNoSymlinkComponents(destination, "manifest destination");
+if (selected.some((file) => path.resolve(file) === destination)) {
+  fail("manifest destination must not overwrite a selected binary");
 }
 fs.writeFileSync(destination, `${rows.map(({ digest, name }) => `${digest}  ${name}`).join("\n")}\n`, {
   mode: 0o600,

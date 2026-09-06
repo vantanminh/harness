@@ -33,7 +33,32 @@ esac
 
 prefix="${HARNESS_INSTALL_PREFIX:-${HOME}/.5harness}"
 bin_dir="${prefix}/bin"
+
+assert_no_symlink_components() {
+  local path="$1" current component
+  if [[ "$path" == /* ]]; then
+    current="/"
+    path="${path#/}"
+  else
+    current="."
+  fi
+  local IFS='/'
+  read -r -a components <<< "$path"
+  for component in "${components[@]}"; do
+    [[ -z "$component" || "$component" == "." ]] && continue
+    [[ "$component" != ".." ]] || fail "path contains parent traversal: $1"
+    if [[ "$current" == "/" ]]; then
+      current="/${component}"
+    else
+      current="${current}/${component}"
+    fi
+    [[ ! -L "$current" ]] || fail "refusing to traverse symlinked path: $current"
+  done
+}
+
+assert_no_symlink_components "$prefix"
 mkdir -p "${bin_dir}"
+assert_no_symlink_components "$bin_dir"
 
 tmp_file=""
 checksum_file=""
@@ -59,7 +84,9 @@ sha256_file() {
 }
 
 checksum_equal() {
-  local expected="${1,,}" actual="${2,,}" diff=0 i
+  local expected actual diff=0 i
+  expected="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  actual="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
   [[ "$expected" =~ ^[0-9a-f]{64}$ && "$actual" =~ ^[0-9a-f]{64}$ ]] || return 1
   for ((i = 0; i < 64; i += 1)); do
     [[ "${expected:i:1}" == "${actual:i:1}" ]] || diff=1
@@ -75,10 +102,11 @@ expected_checksum() {
     done
   fi
   if [[ -n "${HARNESS_INSTALL_EXPECTED_SHA256:-}" ]]; then
-    printf '%s' "${HARNESS_INSTALL_EXPECTED_SHA256,,}"
+    printf '%s' "${HARNESS_INSTALL_EXPECTED_SHA256}" | tr '[:upper:]' '[:lower:]'
     return
   fi
   if [[ -n "$manifest" && -f "$manifest" ]]; then
+    assert_no_symlink_components "$manifest"
     awk -v name="$checksum_name" '
       length($1) == 64 && $1 ~ /^[[:xdigit:]]+$/ {
         candidate=$2; sub(/^\*/, "", candidate); sub(/^.*\//, "", candidate)
@@ -143,6 +171,8 @@ add_path() {
   else
     rc="${HOME}/.bashrc"
   fi
+  assert_no_symlink_components "$rc"
+  [[ ! -L "$rc" ]] || fail "refusing to modify symlinked shell configuration: $rc"
   line="export PATH=\"${bin_dir}:\$PATH\""
   if [[ ! -e "$rc" || -w "$rc" ]]; then
     if ! grep -Fqx "$line" "$rc" 2>/dev/null; then
@@ -160,11 +190,15 @@ add_path() {
 install_bin() {
   local src="$1"
   local dest="${bin_dir}/harness"
+  assert_no_symlink_components "$src"
+  assert_no_symlink_components "$dest"
   [[ -f "$src" ]] || fail "native binary not found: $src"
   [[ ! -L "$src" ]] || fail "refusing to verify a symlinked native binary: $src"
   [[ ! -L "$dest" ]] || fail "refusing to replace symlinked installed binary: $dest"
   verify_checksum "$src"
   cp "$src" "$dest"
+  assert_no_symlink_components "$dest"
+  [[ ! -L "$dest" ]] || fail "refusing to execute a symlinked installed binary: $dest"
   chmod 0755 "$dest"
   verify_checksum "$dest"
   echo "Installed $dest"

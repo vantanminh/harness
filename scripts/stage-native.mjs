@@ -26,6 +26,27 @@ function fail(message) {
   process.exit(1);
 }
 
+function assertNoSymlinkComponents(file, label, insideRepository = false) {
+  const resolved = path.resolve(file);
+  const relative = path.relative(root, resolved);
+  if (insideRepository && (relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))) {
+    fail(`refusing ${label} outside the repository: ${relative}`);
+  }
+  const rootPath = path.parse(resolved).root;
+  let current = rootPath;
+  const components = resolved.slice(rootPath.length).split(path.sep).filter(Boolean);
+  for (const part of components) {
+    current = path.join(current, part);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) {
+        fail(`refusing ${label} through symlink: ${path.relative(root, current)}`);
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+}
+
 function parseArgs() {
   const args = process.argv.slice(2);
   let from = "artifacts";
@@ -86,20 +107,33 @@ function sourceForTarget(files, target, used) {
 }
 
 const { from, targets } = parseArgs();
+assertNoSymlinkComponents(from, "artifact directory");
 if (!fs.existsSync(from) || !fs.statSync(from).isDirectory()) {
   fail(`artifact directory does not exist: ${from}`);
 }
 const files = walk(from);
 const binDir = path.join(root, "bin");
+assertNoSymlinkComponents(binDir, "binary directory", true);
 fs.mkdirSync(binDir, { recursive: true });
+assertNoSymlinkComponents(binDir, "binary directory", true);
 const used = new Set();
 for (const target of targets) {
   const source = sourceForTarget(files, target, used);
   used.add(source);
   const destination = path.join(binDir, targetFilename(target));
-  const stat = fs.statSync(source);
+  assertNoSymlinkComponents(source, "artifact");
+  assertNoSymlinkComponents(destination, "binary destination", true);
+  const stat = fs.lstatSync(source);
   if (stat.size === 0) fail(`artifact is empty: ${source}`);
+  if (!stat.isFile()) fail(`artifact is not a regular file: ${source}`);
+  if (fs.existsSync(destination) && fs.lstatSync(destination).isSymbolicLink()) {
+    fail(`refusing to replace symlinked binary destination: ${destination}`);
+  }
   fs.copyFileSync(source, destination);
+  assertNoSymlinkComponents(destination, "binary destination", true);
+  if (fs.lstatSync(destination).isSymbolicLink()) {
+    fail(`refusing to use symlinked binary destination: ${destination}`);
+  }
   if (!target.includes("windows")) fs.chmodSync(destination, 0o755);
   console.log(`staged ${target} ← ${path.relative(root, source)}`);
 }
