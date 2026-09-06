@@ -366,7 +366,14 @@ pub fn ensure_directory_no_symlink(path: &Path) -> Result<()> {
     let mut current = PathBuf::new();
     for component in path.components() {
         match component {
-            Component::Prefix(prefix) => current.push(prefix.as_os_str()),
+            // A bare Windows drive prefix (for example, `D:`) is not a
+            // filesystem path by itself; querying its metadata returns
+            // ERROR_INVALID_FUNCTION on hosted Windows runners. Defer
+            // validation until the root or first normal component is added.
+            Component::Prefix(prefix) => {
+                current.push(prefix.as_os_str());
+                continue;
+            }
             Component::RootDir => current.push(std::path::MAIN_SEPARATOR.to_string()),
             Component::CurDir => continue,
             Component::ParentDir => {
