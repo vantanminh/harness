@@ -34,6 +34,7 @@ const MAX_MCP_HEADER_BYTES: usize = 64 * 1024;
 const MAX_MCP_STRING_BYTES: usize = 64 * 1024;
 const MAX_MCP_DEPTH: usize = 32;
 const MAX_MCP_COLLECTION_ITEMS: usize = 1_000;
+const MAX_MCP_RESPONSE_BYTES: usize = 1_048_576;
 const DEFAULT_MCP_TOKEN_TTL_SECS: u64 = 86_400;
 const DEFAULT_MCP_RATE_LIMIT_PER_MINUTE: u32 = 120;
 const MAX_MCP_RATE_LIMIT_BUCKETS: usize = 4_096;
@@ -152,6 +153,30 @@ fn constant_time_equal(left: &str, right: &str) -> bool {
     diff == 0
 }
 
+fn bound_mcp_output(value: &str) -> String {
+    if value.len() <= MAX_MCP_RESPONSE_BYTES {
+        return value.to_string();
+    }
+    const MARKER: &str = "\n[output truncated at 1 MiB]";
+    let mut end = MAX_MCP_RESPONSE_BYTES.saturating_sub(MARKER.len());
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{}", &value[..end], MARKER)
+}
+
+fn bound_mcp_response_payload(payload: String) -> String {
+    if payload.len() <= MAX_MCP_RESPONSE_BYTES {
+        return payload;
+    }
+    serde_json::to_string(&json!({
+        "jsonrpc": "2.0",
+        "id": Value::Null,
+        "error": {"code": -32003, "message": "MCP response exceeds 1 MiB limit"}
+    }))
+    .unwrap_or_else(|_| "{\"error\":\"MCP response exceeds 1 MiB limit\"}".into())
+}
+
 fn handle_mcp_request_with_auth(root: Option<&PathBuf>, body: &str, authenticated: bool) -> Value {
     let parsed: Value = match serde_json::from_str(body) {
         Ok(value) => value,
@@ -198,7 +223,7 @@ fn handle_mcp_request_with_auth(root: Option<&PathBuf>, body: &str, authenticate
                 Ok(text) => json!({
                     "jsonrpc":"2.0",
                     "id": id,
-                    "result": {"content":[{"type":"text","text": text}]}
+                    "result": {"content":[{"type":"text","text": bound_mcp_output(&text)}]}
                 }),
                 Err(err) => json!({
                     "jsonrpc":"2.0",
@@ -426,7 +451,7 @@ fn call_tool(root: &Path, name: &str, args: &Value) -> Result<String> {
             let file = get_entity(&peer_root, id)?
                 .ok_or_else(|| Error::new(format!("Peer entity not found: {id}")))?;
             Ok(serde_json::to_string(
-                &json!({"id":id,"path":file.relative_path,"frontmatter":super::durable::fm_json(&file.data),"body":file.body}),
+                &json!({"id":id,"path":file.relative_path,"frontmatter":super::durable::fm_json(&file.data),"body":bound_mcp_output(&file.body)}),
             )?)
         }
         "harness_peer_context" => {
@@ -501,7 +526,7 @@ fn call_tool(root: &Path, name: &str, args: &Value) -> Result<String> {
             let file = get_entity(root, id)?
                 .ok_or_else(|| Error::new(format!("Report {id} not found")))?;
             Ok(serde_json::to_string(
-                &json!({"id":id,"path":file.relative_path,"frontmatter":super::durable::fm_json(&file.data),"body":file.body}),
+                &json!({"id":id,"path":file.relative_path,"frontmatter":super::durable::fm_json(&file.data),"body":bound_mcp_output(&file.body)}),
             )?)
         }
         "harness_report_update" => {
@@ -671,7 +696,7 @@ fn mcp_loop(
                     .and_then(|header| header.value.as_str().parse::<usize>().ok())
                     .is_some_and(|length| length > MAX_MCP_BODY_BYTES);
                 let mut body = String::new();
-                if !rate_limited && !oversized {
+                if !rate_limited && !oversized_headers && !oversized {
                     let mut limited = request.as_reader().take((MAX_MCP_BODY_BYTES + 1) as u64);
                     let _ = limited.read_to_string(&mut body);
                 }
@@ -814,6 +839,7 @@ fn mcp_loop(
                         _ => (404, "text/plain; charset=utf-8", "not found".into(), false),
                     }
                 };
+                let payload = bound_mcp_response_payload(payload);
                 let mut response = Response::new(
                     StatusCode(status),
                     vec![
@@ -877,7 +903,10 @@ pub fn query_view_json_pub(root: &Path, view: &str) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::{handle_mcp_request, RateLimiter};
+    use super::{
+        bound_mcp_output, bound_mcp_response_payload, handle_mcp_request, RateLimiter,
+        MAX_MCP_RESPONSE_BYTES,
+    };
 
     #[test]
     fn rate_limiter_bounds_requests_per_source() {
@@ -896,5 +925,22 @@ mod tests {
         let text = response.to_string();
         assert!(!text.contains("super-secret-token"));
         assert!(text.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn tool_output_is_bounded_without_splitting_utf8() {
+        let value = "é".repeat(MAX_MCP_RESPONSE_BYTES);
+        let bounded = bound_mcp_output(&value);
+        assert!(bounded.len() <= MAX_MCP_RESPONSE_BYTES);
+        assert!(bounded.ends_with("[output truncated at 1 MiB]"));
+        assert!(std::str::from_utf8(bounded.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn response_payload_is_replaced_when_json_encoding_exceeds_limit() {
+        let payload = bound_mcp_response_payload("x".repeat(MAX_MCP_RESPONSE_BYTES + 1));
+        assert!(payload.len() <= MAX_MCP_RESPONSE_BYTES);
+        assert!(payload.contains("MCP response exceeds 1 MiB limit"));
+        assert!(serde_json::from_str::<serde_json::Value>(&payload).is_ok());
     }
 }
