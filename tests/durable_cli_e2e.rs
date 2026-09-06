@@ -257,6 +257,88 @@ fn project_verify_commands_require_explicit_trust() {
     assert!(stdout(&allowed).contains("verification: passed"));
 }
 
+#[test]
+fn verify_all_validates_every_command_before_execution() {
+    let dir = tmp("harness-verify-all-validation-");
+    let d = dir.to_str().unwrap();
+    let init = run(&["init", d], None);
+    assert!(init.status.success(), "{}", stderr(&init));
+    let add = run(
+        &[
+            "story",
+            "add",
+            "--dir",
+            d,
+            "--id",
+            "US-GOOD",
+            "--title",
+            "Good command",
+            "--lane",
+            "normal",
+            "--verify",
+            "echo good",
+        ],
+        None,
+    );
+    assert!(add.status.success(), "{}", stderr(&add));
+
+    let oversized = "x".repeat(8 * 1024 + 1);
+    fs::write(
+        dir.join("docs/stories/US-ZZZ.md"),
+        format!(
+            "---\nid: US-ZZZ\ntype: story\ntitle: Bad command\nstatus: planned\nverify: \"{oversized}\"\n---\n\n# Bad command\n"
+        ),
+    )
+    .unwrap();
+    let result = run(
+        &["story", "verify-all", "--dir", d, "--allow-project-command"],
+        None,
+    );
+    assert!(!result.status.success());
+    let text = stderr(&result) + &stdout(&result);
+    assert!(text.contains("8192-byte limit"), "{text}");
+    let good = fs::read_to_string(dir.join("docs/stories/US-GOOD.md")).unwrap();
+    assert!(!good.contains("last_verified_result"));
+}
+
+#[test]
+fn tool_check_requires_explicit_project_command_trust() {
+    let dir = tmp("harness-tool-trust-");
+    let d = dir.to_str().unwrap();
+    assert!(run(&["init", d], None).status.success());
+    let register = run(
+        &[
+            "tool",
+            "register",
+            "--dir",
+            d,
+            "--name",
+            "project-check",
+            "--command",
+            "echo tool-ok",
+            "--description",
+            "Project check",
+            "--responsibility",
+            "Verification",
+        ],
+        None,
+    );
+    assert!(register.status.success(), "{}", stderr(&register));
+    let refused = run(&["tool", "check", "--dir", d], None);
+    assert!(!refused.status.success());
+    let refused_text = stderr(&refused) + &stdout(&refused);
+    assert!(
+        refused_text.contains("--allow-project-command"),
+        "{refused_text}"
+    );
+    let allowed = run(
+        &["tool", "check", "--dir", d, "--allow-project-command"],
+        None,
+    );
+    assert!(allowed.status.success(), "{}", stderr(&allowed));
+    assert!(stdout(&allowed).contains("project-check"));
+}
+
 #[cfg(unix)]
 #[test]
 fn symlinked_entity_and_local_state_paths_fail_closed() {

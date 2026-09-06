@@ -1,6 +1,11 @@
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use clap::{ArgAction, Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{
@@ -939,6 +944,9 @@ enum ToolCmd {
         dir: DirOpts,
         #[arg(long = "name")]
         name: Option<String>,
+        /// Explicitly approve execution of the project-authored shell command.
+        #[arg(long = "allow-project-command")]
+        allow_project_command: bool,
         #[arg(long = "json")]
         json: bool,
     },
@@ -1527,19 +1535,21 @@ fn dispatch(cmd: Commands, cwd: &Path) -> Result<()> {
                 if json { println!("{}", serde_json::to_string_pretty(&value)?); } else { println!("Tool {} registered.", value["name"].as_str().unwrap_or("")); }
                 Ok(())
             }
-            ToolCmd::Check { dir, name, json } => {
+            ToolCmd::Check { dir, name, allow_project_command, json } => {
                 let target = dir.path(None, cwd);
                 let records = read_records(&target, "tools")?;
                 let mut checked = Vec::new();
                 for mut value in records {
                     if name.as_deref().is_some_and(|filter| value["name"].as_str() != Some(filter)) { continue; }
                     let command = value["command"].as_str().unwrap_or("");
-                    let ok = if command.is_empty() { false } else {
-                        #[cfg(unix)]
-                        { std::process::Command::new("sh").arg("-c").arg(command).status().map(|s| s.success()).unwrap_or(false) }
-                        #[cfg(windows)]
-                        { std::process::Command::new("cmd").args(["/C", command]).status().map(|s| s.success()).unwrap_or(false) }
-                    };
+                    require_project_command_trust(
+                        "tool",
+                        value["name"].as_str().unwrap_or("<unnamed>"),
+                        ".5harness/local/tools.jsonl",
+                        command,
+                        allow_project_command,
+                    )?;
+                    let (ok, _) = run_verify_command(command, &target);
                     if let Some(map) = value.as_object_mut() { map.insert("status".into(), serde_json::json!(if ok { "ok" } else { "failed" })); }
                     let _ = upsert_tool(&target, value.clone())?;
                     checked.push(value);
@@ -1749,6 +1759,7 @@ fn story_cmd(cmd: StoryCmd, cwd: &Path) -> Result<()> {
             let command = as_string(&file.data, "verify")
                 .ok_or_else(|| Error::new(format!("Story {id} has no verify command")))?;
             require_project_command_trust(
+                "verify",
                 &id,
                 &file.relative_path,
                 &command,
@@ -1773,13 +1784,27 @@ fn story_cmd(cmd: StoryCmd, cwd: &Path) -> Result<()> {
             let target = dir.path(None, cwd);
             let files = crate::infra::entities::list_entity_files(&target, "story")?;
             if !allow_project_command {
-                if let Some(file) = files
-                    .iter()
-                    .find(|file| as_string(&file.data, "verify").is_some())
-                {
+                for file in &files {
+                    let Some(command) = as_string(&file.data, "verify") else {
+                        continue;
+                    };
                     let id = as_string(&file.data, "id").unwrap_or_else(|| "<unknown>".into());
-                    let command = as_string(&file.data, "verify").unwrap_or_default();
-                    require_project_command_trust(&id, &file.relative_path, &command, false)?;
+                    require_project_command_trust(
+                        "verify",
+                        &id,
+                        &file.relative_path,
+                        &command,
+                        false,
+                    )?;
+                }
+            }
+            // Validate every command even after the operator has opted in. This
+            // keeps manually authored entities within the same bounded shape as
+            // CLI-created entities and guarantees no command runs before a bad
+            // record is rejected.
+            for file in &files {
+                if let Some(command) = as_string(&file.data, "verify") {
+                    crate::app::durable::validate_verify_command_for_cli(&command)?;
                 }
             }
             let mut failures = 0;
@@ -2089,6 +2114,7 @@ fn decision_cmd(cmd: DecisionCmd, cwd: &Path) -> Result<()> {
             let command = as_string(&file.data, "verify")
                 .ok_or_else(|| Error::new(format!("Decision {id} has no verify command")))?;
             require_project_command_trust(
+                "verify",
                 &id,
                 &file.relative_path,
                 &command,
@@ -2263,6 +2289,7 @@ fn csv_json(value: Option<String>) -> serde_json::Value {
 }
 
 fn require_project_command_trust(
+    kind: &str,
     id: &str,
     relative_path: &str,
     command: &str,
@@ -2274,34 +2301,130 @@ fn require_project_command_trust(
     }
     let command = crate::error::redact_sensitive(command);
     Err(Error::new(format!(
-        "refusing to execute project-authored verify command for {id} ({relative_path}): {command}\nrerun with --allow-project-command after reviewing the command"
+        "refusing to execute project-authored {kind} command for {id} ({relative_path}): {command}\nrerun with --allow-project-command after reviewing the command"
     )))
 }
 
-fn run_verify_command(command: &str, project_root: &Path) -> (bool, String) {
+const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const VERIFY_OUTPUT_LIMIT: usize = 64 * 1024;
+const VERIFY_OUTPUT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn read_verify_output<R: Read>(mut reader: R) -> (Vec<u8>, bool) {
+    let mut bytes = Vec::with_capacity(VERIFY_OUTPUT_LIMIT + 1);
+    let _ = reader
+        .by_ref()
+        .take((VERIFY_OUTPUT_LIMIT + 1) as u64)
+        .read_to_end(&mut bytes);
+    let truncated = bytes.len() > VERIFY_OUTPUT_LIMIT;
+    bytes.truncate(VERIFY_OUTPUT_LIMIT);
+    (bytes, truncated)
+}
+
+fn spawn_verify_reader<R: Read + Send + 'static>(reader: R) -> Receiver<(Vec<u8>, bool)> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(read_verify_output(reader));
+    });
+    receiver
+}
+
+fn receive_verify_output(receiver: Receiver<(Vec<u8>, bool)>) -> (Vec<u8>, bool) {
+    receiver
+        .recv_timeout(VERIFY_OUTPUT_DRAIN_TIMEOUT)
+        .unwrap_or_else(|_| (Vec::new(), true))
+}
+
+fn terminate_verify_process(child: &mut std::process::Child) {
     #[cfg(unix)]
-    let result = std::process::Command::new("sh")
+    {
+        // The shell and its descendants share this dedicated process group.
+        // Use an absolute path so a project-controlled PATH cannot replace the
+        // cleanup utility. The regular child.kill() below remains the fallback
+        // for platforms where group termination is unavailable.
+        let group = format!("-{}", child.id());
+        let _ = std::process::Command::new("/bin/kill")
+            .args(["-TERM", &group])
+            .status();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let _ = std::process::Command::new("/bin/kill")
+            .args(["-KILL", &group])
+            .status();
+    }
+    let _ = child.kill();
+}
+
+fn run_verify_command_with_timeout(
+    command: &str,
+    project_root: &Path,
+    timeout: std::time::Duration,
+) -> (bool, String) {
+    #[cfg(unix)]
+    let mut child = match std::process::Command::new("sh")
         .arg("-c")
         .arg(command)
         .current_dir(project_root)
-        .output();
+        .process_group(0)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(err) => return (false, crate::error::redact_sensitive(&err.to_string())),
+    };
     #[cfg(windows)]
-    let result = std::process::Command::new("cmd")
+    let mut child = match std::process::Command::new("cmd")
         .args(["/C", command])
         .current_dir(project_root)
-        .output();
-    match result {
-        Ok(output) => {
-            let mut text = String::from_utf8_lossy(&output.stdout).to_string();
-            text.push_str(&String::from_utf8_lossy(&output.stderr));
-            let text = crate::error::redact_sensitive(&text);
-            (
-                output.status.success(),
-                text.trim().chars().take(2_000).collect(),
-            )
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(err) => return (false, crate::error::redact_sensitive(&err.to_string())),
+    };
+
+    let stdout_reader = child.stdout.take().map(spawn_verify_reader);
+    let stderr_reader = child.stderr.take().map(spawn_verify_reader);
+
+    let deadline = std::time::Instant::now() + timeout;
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Ok(None) => {
+                timed_out = true;
+                terminate_verify_process(&mut child);
+                break child.wait().ok();
+            }
+            Err(_) => {
+                terminate_verify_process(&mut child);
+                break child.wait().ok();
+            }
         }
-        Err(err) => (false, crate::error::redact_sensitive(&err.to_string())),
+    };
+
+    let (stdout, stdout_truncated) = stdout_reader.map(receive_verify_output).unwrap_or_default();
+    let (stderr, stderr_truncated) = stderr_reader.map(receive_verify_output).unwrap_or_default();
+    let mut text = String::from_utf8_lossy(&stdout).to_string();
+    text.push_str(&String::from_utf8_lossy(&stderr));
+    if stdout_truncated || stderr_truncated {
+        text.push_str("\n[verification output truncated at 64 KiB]");
     }
+    if timed_out {
+        text.push_str("\n[verification timed out after 60 seconds]");
+    }
+    let text = crate::error::redact_sensitive(&text);
+    (
+        status.is_some_and(|value| value.success()) && !timed_out,
+        truncate_chars(text.trim(), 2_000),
+    )
+}
+
+fn run_verify_command(command: &str, project_root: &Path) -> (bool, String) {
+    run_verify_command_with_timeout(command, project_root, VERIFY_TIMEOUT)
 }
 
 fn entity_mtime_fingerprint(project_root: &Path) -> u128 {
