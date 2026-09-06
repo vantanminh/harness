@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
 use std::process::Command;
 
 fn root() -> PathBuf {
