@@ -809,6 +809,11 @@ fn mcp_loop(
                         )
                         .unwrap(),
                         Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
+                        Header::from_bytes(
+                            &b"Content-Security-Policy"[..],
+                            &b"default-src 'none'; frame-ancestors 'none'"[..],
+                        )
+                        .unwrap(),
                         Header::from_bytes(&b"X-Content-Type-Options"[..], &b"nosniff"[..])
                             .unwrap(),
                         Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap(),
