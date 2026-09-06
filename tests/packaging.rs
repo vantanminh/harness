@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -116,14 +117,27 @@ fn ci_still_publishes_to_npmjs_with_provenance() {
         assert!(ci.contains(asset), "ci release assets lack {asset}");
         assert!(rel.contains(asset), "release assets lack {asset}");
     }
-    for workflow in [ci, rel] {
+    for workflow in [&ci, &rel] {
         assert!(!workflow.contains("uses: actions/checkout@v"));
         assert!(!workflow.contains("uses: actions/setup-node@v"));
         assert!(!workflow.contains("uses: actions/upload-artifact@v"));
         assert!(!workflow.contains("uses: actions/download-artifact@v"));
         assert!(!workflow.contains("dtolnay/rust-toolchain@stable"));
         assert!(!workflow.contains("npm@latest"));
+        assert!(!workflow.contains("node-version: \"24.x\""));
+        assert!(!workflow.contains("node-version: [\"22.x\", \"24.x\"]"));
+        assert!(workflow.contains("SHA256SUMS"));
+        assert!(
+            workflow.contains("attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2")
+        );
+        assert!(!workflow.contains("NODE_AUTH_TOKEN"));
     }
+    assert!(ci.contains("release-prep:"));
+    assert!(ci.contains("needs: [build-test, rust-security, release-prep]"));
+    assert!(ci.contains("needs.release-prep.outputs.ref || github.sha"));
+    assert!(rel.contains("prepare:"));
+    assert!(rel.contains("needs: prepare"));
+    assert!(rel.contains("ref: ${{ needs.prepare.outputs.ref }}"));
     let dependabot = fs::read_to_string(root().join(".github/dependabot.yml")).unwrap();
     assert!(dependabot.contains("package-ecosystem: cargo"));
     assert!(fs::read_to_string(root().join("rust-toolchain.toml"))
@@ -132,6 +146,113 @@ fn ci_still_publishes_to_npmjs_with_provenance() {
     assert!(fs::read_to_string(root().join("deny.toml"))
         .unwrap()
         .contains("unknown-registry = \"deny\""));
+}
+
+#[test]
+fn security_docs_track_runtime_boundaries_and_versioned_installers() {
+    let security = fs::read_to_string(root().join("docs/SECURITY.md")).unwrap();
+    assert!(security.contains("Argon2id"));
+    assert!(security.contains("--allow-project-command"));
+    assert!(security.contains("1 MiB"));
+    assert!(security.contains("src/error.rs"));
+    assert!(!security.contains("src/infrastructure/"));
+
+    let threat_model = fs::read_to_string(root().join("docs/THREAT_MODEL.md")).unwrap();
+    for marker in [
+        "Assets",
+        "Trust boundaries",
+        "Threats and mitigations",
+        "Out of scope",
+    ] {
+        assert!(
+            threat_model.contains(marker),
+            "threat model missing {marker}"
+        );
+    }
+
+    let readme = fs::read_to_string(root().join("README.md")).unwrap();
+    assert!(!readme.contains("raw.githubusercontent.com/vantanminh/5harness/main/install"));
+    assert!(!readme.contains("| iex"));
+    assert!(!readme.contains("| bash"));
+
+    let push = fs::read_to_string(root().join("scripts/git-push-release.mjs")).unwrap();
+    assert!(push.find("pull",).unwrap() < push.find("Created tag").unwrap());
+    assert!(push.contains("already points at"));
+}
+
+#[cfg(unix)]
+#[test]
+fn linux_installer_aborts_before_executing_checksum_mismatch() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = root();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let source_dir = std::env::temp_dir().join(format!("harness-installer-integrity-{nonce}"));
+    let prefix = source_dir.join("prefix");
+    fs::create_dir_all(&source_dir).unwrap();
+    let marker = source_dir.join("executed");
+    let binary = source_dir.join("harness");
+    fs::write(
+        &binary,
+        format!("#!/bin/sh\nprintf executed > '{}'\n", marker.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = Command::new("bash")
+        .arg(root.join("install/linux.sh"))
+        .env("HARNESS_INSTALL_FROM", &source_dir)
+        .env("HARNESS_INSTALL_PREFIX", &prefix)
+        .env("HARNESS_INSTALL_SKIP_PATH", "1")
+        .env("HARNESS_INSTALL_EXPECTED_SHA256", "0".repeat(64))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("SHA-256 mismatch"), "{stderr}");
+    assert!(!marker.exists(), "installer executed an unverified binary");
+    assert!(!prefix.join("bin/harness").exists());
+    let _ = fs::remove_dir_all(source_dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn linux_installer_refuses_symlinked_destination() {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let root = root();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let source_dir = std::env::temp_dir().join(format!("harness-installer-dest-{nonce}"));
+    let prefix = source_dir.join("prefix");
+    fs::create_dir_all(prefix.join("bin")).unwrap();
+    let binary = source_dir.join("harness");
+    fs::write(&binary, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+    let digest = hex::encode(Sha256::digest(fs::read(&binary).unwrap()));
+    let outside = source_dir.join("outside");
+    fs::write(&outside, "untouched").unwrap();
+    symlink(&outside, prefix.join("bin/harness")).unwrap();
+
+    let output = Command::new("bash")
+        .arg(root.join("install/linux.sh"))
+        .env("HARNESS_INSTALL_FROM", &source_dir)
+        .env("HARNESS_INSTALL_PREFIX", &prefix)
+        .env("HARNESS_INSTALL_SKIP_PATH", "1")
+        .env("HARNESS_INSTALL_EXPECTED_SHA256", digest)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("symlinked installed binary"), "{stderr}");
+    assert_eq!(fs::read_to_string(outside).unwrap(), "untouched");
+    let _ = fs::remove_dir_all(source_dir);
 }
 
 #[test]

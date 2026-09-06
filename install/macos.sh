@@ -103,6 +103,7 @@ verify_checksum() {
 find_local() {
   local from="$1"
   if [[ -f "$from" ]]; then
+    [[ ! -L "$from" ]] || fail "HARNESS_INSTALL_FROM must not point through a symlink"
     [[ "$from" != *.zip && "$from" != *.tar.gz && "$from" != *.tgz ]] || \
       fail "HARNESS_INSTALL_FROM archive must be unpacked into a directory"
     echo "$from"
@@ -111,7 +112,7 @@ find_local() {
   if [[ -d "$from" ]]; then
     local name
     for name in "harness-${target}" harness; do
-      if [[ -f "${from}/${name}" ]]; then
+      if [[ -f "${from}/${name}" && ! -L "${from}/${name}" ]]; then
         echo "${from}/${name}"
         return
       fi
@@ -160,9 +161,12 @@ install_bin() {
   local src="$1"
   local dest="${bin_dir}/harness"
   [[ -f "$src" ]] || fail "native binary not found: $src"
+  [[ ! -L "$src" ]] || fail "refusing to verify a symlinked native binary: $src"
+  [[ ! -L "$dest" ]] || fail "refusing to replace symlinked installed binary: $dest"
   verify_checksum "$src"
   cp "$src" "$dest"
   chmod 0755 "$dest"
+  verify_checksum "$dest"
   echo "Installed $dest"
   add_path
   export PATH="${bin_dir}:${PATH}"

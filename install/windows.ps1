@@ -73,9 +73,11 @@ function Verify-Checksum([string]$Source) {
     Fail "no valid SHA-256 checksum found for $([System.IO.Path]::GetFileName($Source)); provide SHA256SUMS or HARNESS_INSTALL_EXPECTED_SHA256"
   }
   $actual = (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash.ToLowerInvariant()
-  $expectedBytes = [Convert]::FromHexString($expected)
-  $actualBytes = [Convert]::FromHexString($actual)
-  if (-not [System.Security.Cryptography.CryptographicOperations]::FixedTimeEquals($expectedBytes, $actualBytes)) {
+  $different = 0
+  for ($index = 0; $index -lt 64; $index++) {
+    $different = $different -bor ([int][char]$expected[$index] -bxor [int][char]$actual[$index])
+  }
+  if ($different -ne 0) {
     Fail "SHA-256 mismatch for $([System.IO.Path]::GetFileName($Source)): expected $expected, got $actual"
   }
   Write-Host "Verified SHA-256 for $([System.IO.Path]::GetFileName($Source))"
@@ -149,11 +151,22 @@ function Install-Binary([string]$Source, [string]$Prefix) {
   if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
     Fail "native binary not found: $Source"
   }
+  $sourceItem = Get-Item -LiteralPath $Source -Force
+  if ($sourceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+    Fail "refusing to verify a symlinked native binary: $Source"
+  }
   Verify-Checksum $Source
   $binDir = Join-Path $Prefix "bin"
   New-Item -ItemType Directory -Path $binDir -Force | Out-Null
   $destination = Join-Path $binDir "harness.exe"
+  if (Test-Path -LiteralPath $destination) {
+    $destinationItem = Get-Item -LiteralPath $destination -Force
+    if ($destinationItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+      Fail "refusing to replace symlinked installed binary: $destination"
+    }
+  }
   Copy-Item -LiteralPath $Source -Destination $destination -Force
+  Verify-Checksum $destination
   Write-Host "Installed $destination"
   Add-UserPath $binDir
   $env:Path = "$binDir;$env:Path"
