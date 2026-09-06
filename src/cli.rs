@@ -2508,8 +2508,12 @@ fn run_dashboard(host: &str, port: u16, forever: bool, public_url: Option<&str>)
 
 #[cfg(test)]
 mod tests {
-    use super::{read_verify_output, run_verify_command_with_timeout};
+    use super::read_verify_output;
     use std::io::Cursor;
+
+    #[cfg(unix)]
+    use super::run_verify_command_with_timeout;
+    #[cfg(unix)]
     use std::time::{Duration, Instant};
 
     #[test]
