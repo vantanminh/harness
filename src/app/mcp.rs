@@ -28,6 +28,8 @@ use crate::infra::entities::MutationLock;
 
 const MAX_MCP_BODY_BYTES: usize = 1_048_576;
 const MAX_MCP_HEADER_VALUE_BYTES: usize = 16 * 1024;
+const MAX_MCP_HEADERS: usize = 64;
+const MAX_MCP_HEADER_BYTES: usize = 64 * 1024;
 const MAX_MCP_STRING_BYTES: usize = 64 * 1024;
 const MAX_MCP_DEPTH: usize = 32;
 const MAX_MCP_COLLECTION_ITEMS: usize = 1_000;
@@ -647,7 +649,16 @@ fn mcp_loop(
                 let oversized_headers = request
                     .headers()
                     .iter()
-                    .any(|header| header.value.as_str().len() > MAX_MCP_HEADER_VALUE_BYTES);
+                    .any(|header| header.value.as_bytes().len() > MAX_MCP_HEADER_VALUE_BYTES)
+                    || request.headers().len() > MAX_MCP_HEADERS
+                    || request
+                        .headers()
+                        .iter()
+                        .map(|header| {
+                            header.field.as_str().as_bytes().len() + header.value.as_bytes().len()
+                        })
+                        .sum::<usize>()
+                        > MAX_MCP_HEADER_BYTES;
                 let oversized = request
                     .headers()
                     .iter()

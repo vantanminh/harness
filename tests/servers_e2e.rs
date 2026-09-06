@@ -301,6 +301,15 @@ fn mcp_rejects_oversized_request_bodies_before_authentication() {
     let (status, body) = http_post("127.0.0.1:3955", "/mcp", &oversized);
     assert_eq!(status, 413);
     assert!(body.contains("1 MiB"), "{body}");
+    let huge_header = "h".repeat(16 * 1024 + 1);
+    let (status, body) = http_post_with_headers(
+        "127.0.0.1:3955",
+        "/mcp",
+        r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#,
+        &[("X-Huge", &huge_header)],
+    );
+    assert_eq!(status, 431);
+    assert!(body.contains("header"), "{body}");
     let _ = mcp.kill();
     let _ = mcp.wait();
 }
