@@ -13,7 +13,11 @@ fn run(args: &[&str], cwd: Option<&Path>) -> std::process::Output {
         cmd.current_dir(cwd);
     }
     cmd.env("HARNESS_NO_UPDATE_CHECK", "1");
-    let home = std::env::temp_dir().join(format!("harness-home-{}", std::process::id()));
+    let home = std::env::temp_dir().join(format!(
+        "harness-home-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     let _ = fs::create_dir_all(&home);
     cmd.env("HARNESS_HOME", &home);
     cmd.output().expect("spawn harness")
