@@ -177,3 +177,12 @@ run `harness upgrade` to update the harness block in this AGENTS.md.
 Only the harness-managed section (markers HARNESS:BEGIN through HARNESS:END)
 is modified — all other content is preserved.
 <!-- HARNESS:END -->
+
+## Security Audit Log
+
+<!-- SECURITY-AUDIT-LOG:BEGIN -->
+<!-- One row per unique audit fingerprint; keep detailed evidence in the linked report. -->
+| audit_id | utc | mode | revision | fingerprint | coverage | findings | disposition | report | trace |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| SA-20260906-0157Z-df6bdc686ef2b589 | 2026-09-06T02:00Z | system | HEAD@756ec520b541ab3a7a236000c3e29a1df47ecb1d | sha256:df6bdc686ef2b589499385b56df6d3c155f81cbc158ff1615643181f4d5117a6 | npm launcher/installers/dashboard/MCP/verify/filesystem/CI/dependencies/governance | 1 confirmed info/low installer authenticity gap; 1 likely low slow-client availability gap; controls otherwise not-a-finding | follow-up | docs/security/audits/SA-20260906-0157Z-df6bdc686ef2b589.md | TRACES-1788660005041396008 |
+<!-- SECURITY-AUDIT-LOG:END -->
