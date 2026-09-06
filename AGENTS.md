@@ -58,7 +58,7 @@ project-scoped; `harness init` installs it. Do not use a global copy as the
 source of truth.
 
 <!-- HARNESS:BEGIN -->
-<!-- harness-version: 0.26.2 -->
+<!-- harness-version: 0.27.0 -->
 <!-- harness-project-id: 2155089a1e379d9ebae4b4ac654e7360 -->
 ## Harness
 
