@@ -27,6 +27,26 @@ use super::query::{query_matrix, query_stats};
 const DASHBOARD_AUTH_FAILURE_LIMIT: u32 = 30;
 const DASHBOARD_AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 const MAX_DASHBOARD_AUTH_FAILURE_BUCKETS: usize = 4_096;
+const MAX_DASHBOARD_HEADER_VALUE_BYTES: usize = 16 * 1024;
+const MAX_DASHBOARD_HEADERS: usize = 64;
+const MAX_DASHBOARD_HEADER_BYTES: usize = 64 * 1024;
+const MAX_DASHBOARD_PASSWORD_BYTES: usize = 4 * 1024;
+
+fn dashboard_password_input_allowed(password: &str) -> bool {
+    password.as_bytes().len() <= MAX_DASHBOARD_PASSWORD_BYTES
+}
+
+fn dashboard_headers_oversized(headers: &[Header]) -> bool {
+    headers
+        .iter()
+        .any(|header| header.value.as_bytes().len() > MAX_DASHBOARD_HEADER_VALUE_BYTES)
+        || headers.len() > MAX_DASHBOARD_HEADERS
+        || headers
+            .iter()
+            .map(|header| header.field.as_str().as_bytes().len() + header.value.as_bytes().len())
+            .sum::<usize>()
+            > MAX_DASHBOARD_HEADER_BYTES
+}
 
 struct AuthFailureLimiter {
     buckets: HashMap<String, (Instant, u32)>,
@@ -106,6 +126,9 @@ pub fn set_dashboard_password(password: &str) -> Result<std::path::PathBuf> {
             "dashboard password must be at least 12 characters",
         ));
     }
+    if !dashboard_password_input_allowed(password) {
+        return Err(Error::new("dashboard password must be at most 4096 bytes"));
+    }
     let home = resolve_harness_home();
     crate::infra::entities::ensure_directory_no_symlink(&home)?;
     let path = dashboard_password_path();
@@ -175,6 +198,9 @@ fn dashboard_authorized(headers: &[Header]) -> bool {
     let Some(supplied) = supplied else {
         return false;
     };
+    if !dashboard_password_input_allowed(supplied) {
+        return false;
+    }
     if expected.starts_with("$argon2") {
         let Ok(parsed) = PasswordHash::new(&expected) else {
             return false;
@@ -266,10 +292,14 @@ fn dashboard_loop(server: Server, shutdown: Arc<AtomicBool>, public_bind: bool) 
                 let remote = request.remote_addr();
                 let public_endpoint =
                     path == "/api/health" || (path == "/mcp" && method == Method::Get);
-                let throttled =
-                    public_bind && !public_endpoint && !auth_failures.can_attempt(remote);
+                let oversized_headers = dashboard_headers_oversized(request.headers());
+                let throttled = public_bind
+                    && !public_endpoint
+                    && !oversized_headers
+                    && !auth_failures.can_attempt(remote);
                 let authorized = public_endpoint
-                    || (!throttled
+                    || (!oversized_headers
+                        && !throttled
                         && (!public_bind || dashboard_password_configured())
                         && dashboard_authorized(request.headers()));
                 if public_bind && !public_endpoint {
@@ -279,7 +309,13 @@ fn dashboard_loop(server: Server, shutdown: Arc<AtomicBool>, public_bind: bool) 
                         auth_failures.record_failure(remote);
                     }
                 }
-                let (status, content_type, body) = if throttled {
+                let (status, content_type, body) = if oversized_headers {
+                    (
+                        431,
+                        "application/json; charset=utf-8".into(),
+                        r#"{"error":"request header exceeds 16 KiB limit"}"#.into(),
+                    )
+                } else if throttled {
                     (
                         429,
                         "application/json; charset=utf-8".into(),
@@ -501,8 +537,12 @@ fn html_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthFailureLimiter, DASHBOARD_AUTH_FAILURE_LIMIT};
+    use super::{
+        dashboard_headers_oversized, dashboard_password_input_allowed, AuthFailureLimiter,
+        DASHBOARD_AUTH_FAILURE_LIMIT, MAX_DASHBOARD_HEADER_VALUE_BYTES,
+    };
     use std::net::SocketAddr;
+    use tiny_http::Header;
 
     #[test]
     fn public_auth_failures_are_bounded_per_source() {
@@ -515,5 +555,17 @@ mod tests {
         assert!(!limiter.can_attempt(Some(&remote)));
         limiter.clear(Some(&remote));
         assert!(limiter.can_attempt(Some(&remote)));
+    }
+
+    #[test]
+    fn dashboard_auth_inputs_have_bounded_sizes() {
+        assert!(dashboard_password_input_allowed(&"x".repeat(4 * 1024)));
+        assert!(!dashboard_password_input_allowed(&"x".repeat(4 * 1024 + 1)));
+        let header = Header::from_bytes(
+            &b"X-Harness-Password"[..],
+            vec![b'x'; MAX_DASHBOARD_HEADER_VALUE_BYTES + 1],
+        )
+        .expect("header");
+        assert!(dashboard_headers_oversized(&[header]));
     }
 }
