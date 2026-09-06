@@ -82,16 +82,18 @@ fn legacy_dashboard_password_path() -> std::path::PathBuf {
 }
 
 fn dashboard_password_hash() -> Option<String> {
-    std::fs::read_to_string(dashboard_password_path())
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            std::fs::read_to_string(legacy_dashboard_password_path())
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        })
+    fn read_record(path: std::path::PathBuf) -> Option<String> {
+        let metadata = std::fs::symlink_metadata(&path).ok()?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return None;
+        }
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    read_record(dashboard_password_path()).or_else(|| read_record(legacy_dashboard_password_path()))
 }
 
 pub fn dashboard_password_configured() -> bool {

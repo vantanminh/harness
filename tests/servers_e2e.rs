@@ -82,6 +82,16 @@ fn dashboard_password_is_argon2id_and_public_bind_fails_closed() {
     let record = std::fs::read_to_string(home.join("dashboard-password.argon2")).unwrap();
     assert!(record.starts_with("$argon2id$"), "{record}");
     assert!(!home.join("dashboard-password.sha256").exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(home.join("dashboard-password.argon2"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "dashboard password mode: {mode:o}");
+    }
 
     let mut dashboard = Command::new(bin())
         .args([
@@ -110,6 +120,37 @@ fn dashboard_password_is_argon2id_and_public_bind_fails_closed() {
     assert!(body.contains("Harness Dashboard"));
     let _ = dashboard.kill();
     let _ = dashboard.wait();
+}
+
+#[cfg(unix)]
+#[test]
+fn dashboard_password_refuses_symlinked_harness_home() {
+    use std::os::unix::fs::symlink;
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("harness-home-symlink-{nonce}"));
+    let outside = root.join("outside");
+    let linked = root.join("linked");
+    std::fs::create_dir_all(&outside).unwrap();
+    symlink(&outside, &linked).unwrap();
+
+    let set = Command::new(bin())
+        .args([
+            "dashboard",
+            "set-password",
+            "--password",
+            "correct horse battery staple",
+        ])
+        .env("HARNESS_HOME", &linked)
+        .output()
+        .unwrap();
+    assert!(!set.status.success());
+    let text = String::from_utf8_lossy(&set.stderr);
+    assert!(text.to_lowercase().contains("symlink"), "{text}");
+    assert!(!outside.join("dashboard-password.argon2").exists());
 }
 
 fn http_post(addr: &str, path: &str, json: &str) -> (u16, String) {
