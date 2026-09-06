@@ -58,7 +58,7 @@ implicitly.
 | Source of the command | Local Git-backed markdown (project authors / collaborators) |
 | Who triggers execution | Operator running `harness story verify … --allow-project-command`, `verify-all`, or `tool check --allow-project-command` |
 | Shell | Yes — so common proof scripts work (`npm test`, `node -e "…"`, `&&`) |
-| Hardening | Non-empty, single-line, max 8 KiB, no NUL bytes; verification output is capped at 64 KiB while captured, redacted, then capped before persistence; verify commands time out after 60 seconds |
+| Hardening | Non-empty, single-line, max 8 KiB, no NUL bytes; command output is capped at 64 KiB while captured, redacted, then capped before persistence; verify/tool checks time out after 60 seconds and terminate their process tree where the host supports it |
 
 This is the same trust class as:
 
