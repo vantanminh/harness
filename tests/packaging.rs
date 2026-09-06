@@ -215,7 +215,7 @@ fn security_docs_track_runtime_boundaries_and_versioned_installers() {
     assert!(push.contains("already points at"));
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn linux_installer_aborts_before_executing_checksum_mismatch() {
     use std::os::unix::fs::PermissionsExt;
@@ -253,7 +253,7 @@ fn linux_installer_aborts_before_executing_checksum_mismatch() {
     let _ = fs::remove_dir_all(source_dir);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn linux_installer_refuses_symlinked_destination() {
     use sha2::{Digest, Sha256};
@@ -290,7 +290,7 @@ fn linux_installer_refuses_symlinked_destination() {
     let _ = fs::remove_dir_all(source_dir);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn linux_installer_refuses_symlinked_binary_directory() {
     use sha2::{Digest, Sha256};
