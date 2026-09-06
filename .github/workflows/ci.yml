@@ -37,6 +37,12 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      existing_tag:
+        description: "Existing vX.Y.Z tag to validate and republish without changing main (recovery)"
+        required: true
+        type: string
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -118,10 +124,16 @@ jobs:
     name: Prepare auto-release ref
     needs: [build-test, rust-security]
     if: >
-      github.ref == 'refs/heads/main' &&
-      github.event_name == 'push' &&
-      !contains(github.event.head_commit.message, 'chore(release):') &&
-      !contains(github.event.head_commit.message, '[skip release]')
+      (
+        github.ref == 'refs/heads/main' &&
+        github.event_name == 'push' &&
+        !contains(github.event.head_commit.message, 'chore(release):') &&
+        !contains(github.event.head_commit.message, '[skip release]')
+      ) ||
+      (
+        github.event_name == 'workflow_dispatch' &&
+        inputs.existing_tag != ''
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -136,6 +148,8 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.1
         with:
           fetch-depth: 0
+          # Recovery dispatches build and publish the exact immutable tag.
+          ref: ${{ inputs.existing_tag || github.sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Rust
@@ -164,6 +178,7 @@ jobs:
 
       - name: Detect bump kind from commits since last tag
         id: bump
+        if: inputs.existing_tag == ''
         env:
           HEAD_MSG: ${{ github.event.head_commit.message }}
         run: |
@@ -195,23 +210,48 @@ jobs:
 
       - name: Plan release
         id: plan
+        env:
+          EXISTING_TAG: ${{ inputs.existing_tag }}
         run: |
           set -euo pipefail
-          OUT="$(node scripts/release-plan.mjs --kind "${{ steps.bump.outputs.kind }}")"
-          echo "$OUT"
-          while IFS= read -r line; do
-            case "$line" in
-              skip=*|mode=*|version=*|kind=*|reason=*) echo "$line" >> "$GITHUB_OUTPUT" ;;
-            esac
-          done <<< "$OUT"
+          if [ -n "${EXISTING_TAG:-}" ]; then
+            if ! [[ "$EXISTING_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "existing_tag must match vX.Y.Z"
+              exit 1
+            fi
+            VERSION="${EXISTING_TAG#v}"
+            test "$(git rev-list -n1 "$EXISTING_TAG")" = "$(git rev-parse HEAD)"
+            test "$(node -p "require('./package.json').version")" = "$VERSION"
+            {
+              echo "skip=false"
+              echo "mode=tag-only"
+              echo "version=$VERSION"
+              echo "kind=recovery"
+              echo "reason=reusing immutable existing tag $EXISTING_TAG"
+            } >> "$GITHUB_OUTPUT"
+          else
+            OUT="$(node scripts/release-plan.mjs --kind "${{ steps.bump.outputs.kind }}")"
+            echo "$OUT"
+            while IFS= read -r line; do
+              case "$line" in
+                skip=*|mode=*|version=*|kind=*|reason=*) echo "$line" >> "$GITHUB_OUTPUT" ;;
+              esac
+            done <<< "$OUT"
+          fi
 
       - name: Bump version
         id: version
         if: steps.plan.outputs.skip != 'true'
+        env:
+          EXISTING_TAG: ${{ inputs.existing_tag }}
         run: |
           set -euo pipefail
           MODE="${{ steps.plan.outputs.mode }}"
-          if [ "$MODE" = "bump" ]; then
+          if [ -n "${EXISTING_TAG:-}" ]; then
+            NEW="${EXISTING_TAG#v}"
+            test "$MODE" = "tag-only"
+            test "$(node -p "require('./package.json').version")" = "$NEW"
+          elif [ "$MODE" = "bump" ]; then
             NEW="$(node scripts/bump-version.mjs "${{ steps.bump.outputs.kind }}" | tail -n1)"
           else
             NEW="$(node -p "require('./package.json').version")"
@@ -244,7 +284,7 @@ jobs:
           fi
 
       - name: Commit, tag, and push release ref
-        if: steps.plan.outputs.skip != 'true'
+        if: steps.plan.outputs.skip != 'true' && inputs.existing_tag == ''
         run: |
           set -euo pipefail
           SIGN_FLAG=""
