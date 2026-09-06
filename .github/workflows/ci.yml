@@ -155,6 +155,8 @@ jobs:
 
       - name: Detect bump kind from commits since last tag
         id: bump
+        env:
+          HEAD_MSG: ${{ github.event.head_commit.message }}
         run: |
           set -euo pipefail
           LAST_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
@@ -173,7 +175,6 @@ jobs:
           elif echo "$SUBJECTS" | grep -Eiq '^feat(\([^)]+\))?:'; then
             KIND="minor"
           fi
-          HEAD_MSG="${{ github.event.head_commit.message }}"
           if echo "$HEAD_MSG" | grep -Eiq '\[release:[[:space:]]*major\]'; then
             KIND="major"
           elif echo "$HEAD_MSG" | grep -Eiq '\[release:[[:space:]]*minor\]'; then

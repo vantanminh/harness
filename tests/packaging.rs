@@ -143,6 +143,8 @@ fn ci_still_publishes_to_npmjs_with_provenance() {
         assert!(!workflow.contains("NODE_AUTH_TOKEN"));
     }
     assert!(ci.contains("release-prep:"));
+    assert!(ci.contains("HEAD_MSG: ${{ github.event.head_commit.message }}"));
+    assert!(!ci.contains("HEAD_MSG=\"${{ github.event.head_commit.message }}\""));
     assert!(ci.contains("needs: [build-test, rust-security, release-prep]"));
     assert!(ci.contains("needs.release-prep.outputs.ref || github.sha"));
     assert!(rel.contains("prepare:"));
