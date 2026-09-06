@@ -68,9 +68,8 @@ pub fn paths_equal(a: &Path, b: &Path) -> bool {
     let nb = normalize_project_path(b);
     #[cfg(windows)]
     {
-        return na
-            .to_string_lossy()
-            .eq_ignore_ascii_case(&nb.to_string_lossy());
+        na.to_string_lossy()
+            .eq_ignore_ascii_case(&nb.to_string_lossy())
     }
     #[cfg(not(windows))]
     {
