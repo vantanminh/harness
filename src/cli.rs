@@ -2350,6 +2350,21 @@ fn terminate_verify_process(child: &mut std::process::Child) {
             .args(["-KILL", &group])
             .status();
     }
+    #[cfg(windows)]
+    {
+        // `cmd /C` can leave a descendant running after the shell exits;
+        // taskkill's tree mode closes the whole process tree on timeout.
+        let taskkill = std::env::var_os("SystemRoot")
+            .map(|root| {
+                std::path::PathBuf::from(root)
+                    .join("System32")
+                    .join("taskkill.exe")
+            })
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows\System32\taskkill.exe"));
+        let _ = std::process::Command::new(taskkill)
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .status();
+    }
     let _ = child.kill();
 }
 
