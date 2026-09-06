@@ -209,7 +209,7 @@ fn handle_mcp_request_with_auth(root: Option<&PathBuf>, body: &str, authenticate
         }
         "ping" => json!({"jsonrpc":"2.0","id":id,"result":{}}),
         _ => {
-            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":format!("Method not found: {method}")}})
+            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":format!("Method not found: {}", crate::error::redact_sensitive(method))}})
         }
     }
 }
@@ -689,6 +689,10 @@ fn mcp_loop(
                         .and_then(Value::as_str)
                         .map(str::to_string)
                 });
+                let rpc_method = rpc_method.map(|value| {
+                    let bounded: String = value.chars().take(256).collect();
+                    crate::error::redact_sensitive(&bounded)
+                });
                 let path = url.split('?').next().unwrap_or("/");
                 let authorization = request
                     .headers()
@@ -873,7 +877,7 @@ pub fn query_view_json_pub(root: &Path, view: &str) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::RateLimiter;
+    use super::{handle_mcp_request, RateLimiter};
 
     #[test]
     fn rate_limiter_bounds_requests_per_source() {
@@ -881,5 +885,16 @@ mod tests {
         assert!(limiter.allow(None));
         assert!(limiter.allow(None));
         assert!(!limiter.allow(None));
+    }
+
+    #[test]
+    fn unknown_methods_do_not_echo_credential_values() {
+        let response = handle_mcp_request(
+            None,
+            r#"{"jsonrpc":"2.0","id":1,"method":"Bearer super-secret-token"}"#,
+        );
+        let text = response.to_string();
+        assert!(!text.contains("super-secret-token"));
+        assert!(text.contains("[REDACTED]"));
     }
 }
