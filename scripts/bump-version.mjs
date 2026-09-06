@@ -116,7 +116,6 @@ function writeJson(rel, data) {
 }
 
 function replaceInFile(rel, replacer) {
-  const full = path.join(root, rel);
   const before = readText(rel, false);
   if (before === null) return false;
   const after = replacer(before);
@@ -141,7 +140,6 @@ pkg.version = newVersion;
 writeJson("package.json", pkg);
 
 // package-lock.json (root fields only — keep deps intact)
-const lockPath = path.join(root, "package-lock.json");
 const lockText = readText("package-lock.json", false);
 if (lockText !== null) {
   const lock = JSON.parse(lockText);
@@ -233,7 +231,6 @@ function promoteUnreleased(changelog, version, date) {
 }
 
 const changelogRel = "CHANGELOG.md";
-const changelogFull = path.join(root, changelogRel);
 const changelogText = readText(changelogRel, false);
 if (changelogText !== null) {
   const today = new Date().toISOString().slice(0, 10);
