@@ -113,6 +113,8 @@ fn ci_still_publishes_to_npmjs_with_provenance() {
     assert!(ci.contains("install/macos.sh"));
     assert!(ci.contains("install/windows.ps1"));
     assert!(ci.contains("npm run install:smoke"));
+    assert!(ci.contains("test ! -L sbom.spdx.json"));
+    assert!(rel.contains("test ! -L sbom.spdx.json"));
     assert!(rel.contains("stage-native.mjs"));
     for target in [
         "x86_64-unknown-linux-gnu",

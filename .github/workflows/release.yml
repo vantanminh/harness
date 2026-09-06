@@ -265,6 +265,7 @@ jobs:
       - name: Generate SBOM (SPDX)
         run: |
           set -euo pipefail
+          test ! -L sbom.spdx.json
           npm sbom --sbom-format spdx --package-lock-only > sbom.spdx.json
           test -s sbom.spdx.json
 
