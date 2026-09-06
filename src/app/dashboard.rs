@@ -33,7 +33,7 @@ const MAX_DASHBOARD_HEADER_BYTES: usize = 64 * 1024;
 const MAX_DASHBOARD_PASSWORD_BYTES: usize = 4 * 1024;
 
 fn dashboard_password_input_allowed(password: &str) -> bool {
-    password.as_bytes().len() <= MAX_DASHBOARD_PASSWORD_BYTES
+    password.len() <= MAX_DASHBOARD_PASSWORD_BYTES
 }
 
 fn dashboard_headers_oversized(headers: &[Header]) -> bool {
